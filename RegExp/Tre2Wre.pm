@@ -6,8 +6,6 @@ require Exporter;
 our (@ISA) = ("Exporter");
 our (@EXPORT) = qw(tre_to_wre);
 
-use YAML::XS;   ## Not needed for this program - this is a convenience for debugging.
-
 
 =format
 
@@ -2347,6 +2345,21 @@ sub load_tests {
         $test_number++;
     }
 }
+
+=format
+
+==============================================================================
+
+Copyright 2010, 2011, 2012 Derek Mead. All rights reserved 
+ 
+This program is free software. It comes without any warranty, to the extent
+permitted by applicable law. You can redistribute it and/or modify it
+under the same terms as Perl itself.
+
+See http://www.perl.com/perl/misc/Artistic.html
+
+==============================================================================
+=cut
 
 
 1;  # Module must end like this
