@@ -16,7 +16,7 @@
     our $magic;
 
 
-
+our $VERSION = '2012.10.08';
 
 
 =format
@@ -1719,6 +1719,9 @@ sub _generate_regex {
         } elsif ($quant_min == 1) {
             if ($quant_max eq 'more') {
                 $quant_text = '+';
+            } elsif ($quant_max == 1) {
+                # min 1, max 1: no text needed
+                $quant_text = '';
             }
         } elsif ($quant_min eq $quant_max) {
             $quant_text = "{$quant_min}";
@@ -1821,7 +1824,7 @@ sub _generate_regex {
                 #my @encoded = map { _char_non_class_encode($_) } @string_chars;
                 my $encoded_val = '';
                 for my $sch (@string_chars) {
-                    $encoded_val .= _char_non_class_encode($sch, $xsp ? '[ ]' : ' ');
+                    $encoded_val .= _char_non_class_encode($sch, $xsp ? ' ' : '[ ]');
                 }
                 if ($strings) {
                     # Not first string
@@ -2518,6 +2521,9 @@ sub _split_regex {
         $out_text .= $out_line . "\n";
     }
     chomp $out_text if $no_terminal_newline;
+    if ($xsp) {
+        $out_text =~ s/ ^ \Q$xsp\E //x;# Hack a leading space off
+    }
     return $out_text;
 }
 
@@ -2674,7 +2680,11 @@ sub main_line {
     # Reads a wre from a file, generates and prints a conventional regex
 
    
-    print (_wre_to_tre(slurp_stdin(), {free_space => 1}) );
+    my $wre = slurp_stdin();
+    print (_wre_to_tre($wre, {free_space => 1}) );
+    print "\n------------------------\n";
+    print (_wre_to_tre($wre, {free_space => 0}) );
+    print "\n------------------------\n";
     my $pause = 'end of program';
 }
 #---------------------------------------
@@ -4724,19 +4734,21 @@ Whitespace / whitespaces / Whitespace-characters
 'Whitespace' is problematic: does it mean 'one or more whitespace characters' or
 simply 'any single whitespace character'?
 
-Option: use 'whitespace-character' (or abbreviations such as ws-ch) as the form
-to explicitly specify each occurence of a whitespace character, and treat
-'whitespace' as the plural of 'whitespace-character'.
+So 'whitespace' might be used to refer to the visual effect of white space (non
+graphic characters) between graphic characters, where the nature of whitespace
+can make it impossible to tell by simple visual inspection whether there is more
+than one character. For example, the visual effect of a single tab character
+will often be identical to that of multiple spaces.
 
-That results in there being no need for 'whitespaces', but its use shouldn't be
-an error as it isn't ambiguous - although it might be an indication that the
-regex writer doesn't fully understand the rules.
+However, having 'whitespace' mean 'one or more whitespace characters' is probably
+more confusing than is worthwhile: it would be a special case of an apparent
+singular actually meaning a plural, plus it would mean that 'whitespace-character'
+would also have to be implemented to allow the regex writer to specify an exact
+number.
 
-So 'whitespace' refers to the visual effect of white space between other
-characters, where the nature of whitespace can make it impossible to tell by
-simple visual inspection whether there is more than one character. For example,
-the visual effect of a single tab character will often be identical to that of
-multiple spaces.
+So what has been implemented is 'whitespace' meaning the same as \s in a terse
+regexp:, i.e. a single character. If you want to specify one or more whitespace
+characters, you have to use the plural form 'whitespaces' or its abbreviation 'wss'.
 
 
 -----------------------------------
@@ -4746,8 +4758,8 @@ Plural Character and Group Names
     - You don't have to use plurals, ever - they are only a shortcut. So if you
       haven't bothered to learn the rules or you don't understand them, you can
       still write a regex that does what you want.
-    - re2word may generate plurals for some simple cases, so if you are using
-      re2word you will need to understand the basics - but they are easy.
+    - Tre2Wre.pm may generate plurals for some simple cases, so if you are using
+      Tre2Wre you will need to understand the basics - but they are easy.
     - A plural without a numeric quantifier implies 'one or more':
 
     tabs             # One or more tab characters
@@ -5971,7 +5983,7 @@ Derek Mead
 
 =head1 COPYRIGHT
 
-Copyright (c) 2011-2012 Derek Mead
+Copyright (c) 2011, 2012 Derek Mead
 
 This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.

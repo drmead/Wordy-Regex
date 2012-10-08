@@ -127,25 +127,24 @@ groups:
               end-of-previous-match
               #
               capture
-                  zero or more  non-newline    
-    - group-name: Examples wordy-to-terse
-      wordy-to-terse: true
-      tests:
-
+                  zero or more  non-newline
+                  
         - name: Paragraph numbers and headings
           notes:
+          terse: |
+            \(([a-zA-Z]|[ivx]{1,3}|\d{1,2})\) +(.*)
           wordy: |
             (
             capture
-                either one letter
-                or one to three  i v x
-                or one or two digits    
+                    either a-z A-Z
+                    or
+                        one to three  i v x
+                    or
+                        one or two  digit
             )
-            spaces
+            one or more  space
             capture
                 zero or more  non-newline
-          terse: |
-            [(]((?:[A-Za-z]{1,1}|[ivx]{1,3})|\d{1,2})[)][ ]+([^\n]*)
           matches:
             -
               global: true
@@ -162,6 +161,162 @@ groups:
                 - 42
                 - The Oak
                 - d
+                - The Pine
+        - name: Paragraph numbers and headings, missing space
+          notes: Terse regexp is missing a space, changes its meaning
+          wordy: |
+            (
+            capture
+                    either a-z A-Z
+                    or
+                        one to three  i v x
+                    or
+                        one or two  digit
+            one or more  )
+            capture
+                zero or more  non-newline
+            )
+          terse: |
+            [(]([a-zA-Z]|[ivx]{1,3}|\d{1,2})[)]+(.*)[)]
+                
+    - group-name: Examples wordy-to-terse
+      wordy-to-terse: true
+      tests:
+      
+        - name: Quoted string, free spacing mode
+          notes: 
+          wordy: |
+            "Plain quoted string"
+            'Mrs. O'Grady said "Hello!"'
+            'Mrs. O'Grady said "Hello!"'
+            "Mrs. O'Grady said 'Hello!'"
+            'Mrs. O'Grady said 'Hello!''
+            "Mrs. O'Grady said "Hello!""
+            'Mrs. O'Grady said "Hello!" and laughed'
+            "Mrs. O'Grady said 'Hello!' and laughed"
+
+          terse-options: x
+          # Note the terse output is really one long string, but we input it
+          # using a YAML block that puts a single spce between each line
+          terse: >
+            Plain quoted string
+            Mrs\. O'Grady said "Hello!"
+            Mrs\. O'Grady said "Hello!"
+            Mrs\. O'Grady said 'Hello!'
+            Mrs\. O'Grady said 'Hello!'
+            Mrs\. O'Grady said "Hello!"
+            Mrs\. O'Grady said "Hello!" and laughed
+            Mrs\. O'Grady said 'Hello!' and laughed
+            
+        - name: whitespace
+          notes: Is whitepace always treated as a plural? No!
+          wordy: |
+            whitespace
+            whitespaces
+            one whitespace
+            two or three whitespace
+          terse: |
+            \s\s+\s\s{2,3}
+
+        - name: Quoted string
+          notes: 
+          wordy: |
+            'Mrs. O'Grady said "Hello!"'
+            ";"
+            "Mrs. O'Grady said 'Hello!'"
+            ";"
+            'Mrs. O'Grady said 'Hello!''
+            ";"
+            "Mrs. O'Grady said "Hello!""
+            ";"
+            'Mrs. O'Grady said "Hello!" and laughed'
+            ";"
+            "Mrs. O'Grady said 'Hello!' and laughed"
+          terse-options:
+          terse: |
+            Mrs\.[ ]O'Grady[ ]said[ ]"Hello!";Mrs\.[ ]O'Grady[ ]said[ ]'Hello!';Mrs\.[ ]O'Grady[ ]said[ ]'Hello!';Mrs\.[ ]O'Grady[ ]said[ ]"Hello!";Mrs\.[ ]O'Grady[ ]said[ ]"Hello!"[ ]and[ ]laughed;Mrs\.[ ]O'Grady[ ]said[ ]'Hello!'[ ]and[ ]laughed
+        
+        - name: Quoted string, free spacing mode
+          notes: 
+          wordy: |
+            'Mrs. O'Grady said "Hello!"'
+            ";"
+            "Mrs. O'Grady said 'Hello!'"
+            ";"
+            'Mrs. O'Grady said 'Hello!''
+            ";"
+            "Mrs. O'Grady said "Hello!""
+            ";"
+            'Mrs. O'Grady said "Hello!" and laughed'
+            ";"
+            "Mrs. O'Grady said 'Hello!' and laughed"
+          terse-options: x
+          terse: |
+            Mrs\. O'Grady said "Hello!"; Mrs\. O'Grady said 'Hello!'; Mrs\. O'Grady said 'Hello!'; Mrs\. O'Grady said "Hello!"; Mrs\. O'Grady said "Hello!" and laughed; Mrs\. O'Grady said 'Hello!' and laughed
+
+        - name: Paragraph numbers and headings
+          notes:
+          wordy: |
+            (
+            capture
+                either one letter
+                or one to three  i v x
+                or one or two digits    
+            )
+            spaces
+            capture
+                zero or more  non-newline
+          terse: |
+            [(]((?:[A-Za-z]|[ivx]{1,3})|\d{1,2})[)][ ]+([^\n]*)
+          matches:
+            -
+              global: true
+              data: |
+                  (ix) The Larch
+                      Stuff about larch trees
+                  (42) The Oak
+                      Stuff about oak trees
+                  (d) The Pine
+                      Stuff about pine trees
+              match-array:
+                - ix
+                - The Larch
+                - 42
+                - The Oak
+                - d
+                - The Pine
+
+        - name: Paragraph numbers and headings, full unicode
+          notes: Test doesn't include unicode character because YAML::XXS:Load barfs
+          wordy: |
+            full-unicode
+                (
+                capture
+                    either one letter
+                    or one to three  i v x
+                    or one or two digits    
+                )
+                spaces
+                capture
+                    zero or more  non-newline
+          terse: |
+            (?u:[(]((?:(?:\p{Letter})|[ivx]{1,3})|\d{1,2})[)][ ]+([^\n]*))
+          matches:
+            -
+              global: true
+              data: |
+                  (ix) The Larch
+                      Stuff about larch trees
+                  (42) The Oak
+                      Stuff about oak trees
+                  (Z) The Pine
+                      Stuff about pine trees
+              match-array:
+                - ix
+                - The Larch
+                - 42
+                - The Oak
+                - Z
                 - The Pine
                 
         - name: Individual named characters, part 1
@@ -341,6 +496,39 @@ groups:
             -
                 data: |
                     alias Prez president@whitehouse.gov
+                named-matches:
+                    alias: Prez
+                    value: president@whitehouse.gov
+
+        - name: Alias, but with named captures and named back-ref
+          notes: Extracting alias name and value, example used in MRE2
+          wordy: |
+                start-of-line
+                'alias'
+                whitespaces
+                capture as alias one or more non-whitespace
+                whitespaces
+                capture as value characters
+                =
+                backref-alias
+          terse: |
+                (?sm:^alias\s+(?<alias>\S+)\s+(?<value>.+)=\g{alias})
+          matches:
+            -
+                data: |
+                    alias Jeff jfriedl@regex.info=Jeff
+                named-matches:
+                  alias: Jeff
+                  value: jfriedl@regex.info
+            -
+                data: |
+                    alias Perlbug perl5-porters@perl.org=Perlbug
+                named-matches:
+                    alias: Perlbug
+                    value: perl5-porters@perl.org
+            -
+                data: |
+                    alias Prez president@whitehouse.gov=Prez
                 named-matches:
                     alias: Prez
                     value: president@whitehouse.gov
@@ -2586,9 +2774,12 @@ for my $group_ref ( @{$groups_ref}) {
                     # We have a wordy
                     ## Might need to call a more complex routine, e.g. to handle
                     ## errors more elegantly
+                    my $terse_options = $test_ref->{'terse-options'} || '';
+                    my $free_space = $terse_options =~  / [^-]* x /x;
                     my $generated_tre = _wre_to_tre($wordy,
-                                                    {free_space  => 0,
-                                                     wrap_output => 0}
+                                                    {free_space     => $free_space,
+                                                     embed_original => 0,
+                                                     wrap_output    => 0}
                                                     );    # Makes a wre object
                     if (defined $terse) {
                         # We have been supplied a terse regexp to compare with
