@@ -43,24 +43,26 @@ Matchers on one line (separated by spaces) are alternatives
 Matchers on consecutive lines are matched in sequence
 
 Modifiers are words that specify capturing, optional, mode or quantity
-Modifiers can be written on a line in front of any matchers on that line
-Modifiers apply to their own line and any lines indented from them
+Modifiers apply to their own line, or to any lines indented from them
 
-Capturing is requested by the word 'capture'
+Capturing is requested by 'capture' or 'capture as <name>'
 Optional items have the word 'optional'
 Quantifiers are words or phrases such as 'three' or 'one or more' or 'two to four'
 
-Alternatives can be specified using either/or
+Alternatives can be specified using either/or, with each 'or' vertically below the 'either'.
 ++++ 
-On a given line, capture, optional, quantifier, and matcher(s) can only be in that order
-Nothing allowed to be indented from a line that has any matchers
+On a given line: capture, optional, quantifier, and any matchers can only be in that order.
+A line that has any matchers must not have any lines indented from it.
 If you want to use digits as a quantifier rather than the word, prefix it with 'quantity'
 Groups: letter, digit, word-character
-Named characters: optional except for #, single and double quotes, newline and tab.
+Named characters: optional except for:
+        hash (meaning the # character which starts a comment)
+        single and double quotes
+        newline, tab and other non-graphic characters
 Negated characters, groups and other matchers (such as word-boundary): not and non-
-Other matchers, such as start-of-string/end-of-string
+Other matchers, such as start-of-string/end-of-string/eosx/start-of-line/end-of-line
 Spaces and whitespace
-hex, octal and control characters
+hex, octal and control characters: e.g. hex-0A, octal-12, control-G
 Ranges:  0-9  a-g  q to z (Caution: a - z is three naked characters, not a range)
 Plurals
 'character' or 'ch' matches any character, including newline. Use 'non-newline' if required.
@@ -74,7 +76,7 @@ Rules for matching single and double quotes - revisit?
             a b c '   # Allow some letters or '
     In the second line above, that's part of a quoted string, not a comment
     Disallow naked quotes? It's simple to explain.
-    Would need synonyms such as SQ or DQ as alternatives to apostrophe,
+    Would need short synonyms such as SQ or DQ as alternatives to apostrophe,
      double-quote, '"' and "'" 
 Unicode options
 Numeral vs. digit
@@ -84,8 +86,6 @@ back-references
 condition
 
 =cut
-
-
 
 my $GENERATE_FREE_SPACE_MODE;
 my $EMBED_ORIGINAL_REGEX;
@@ -241,10 +241,12 @@ my %synonyms = (ch     => 'character', chs        => 'characters',
                 thru   => 'to'       , through    => 'to'        ,
                 get          => 'capture'         ,
                 uncased      => 'case_insensitive',
-                word_char    => 'word_ch'         ,
                 non_case_sensitive
                              => 'case_insensitive',
+                ci           => 'case_insensitive',
                 cased        => 'case_sensitive'  ,
+                cs           => 'case_sensitive'  ,
+                word_char    => 'word_ch'         ,
                 upper_case_letter
                              => 'uc_letter'       ,
                 lower_case_letter
@@ -484,7 +486,7 @@ sub say {
         # Returns:
         #   1) - In a string or regex context:
         #          An object that evaluates to a terse regex
-        #      - in a boolean context
+        #      - In a boolean context
         #          The result of matching $_ against a terse regex
         #
         # The regex returned (or used) by wre is normally the
@@ -506,7 +508,7 @@ sub say {
         # wre() is intended to be used in Perl programs where a terse
         # regexp would otherwise be used.
         #
-        # The reasoning for passing both an wre and a terse regexp to wre() is
+        # The reasoning for passing both a wre and a terse regexp to wre() is
         # that it allows maximum flexibility.
         #
         # There can be three regexps that relate to a single regexp in Perl
@@ -516,8 +518,8 @@ sub say {
         #
         #       (a) The original terse regexp as written by the programmer
         #
-        #       (b) The equivalent wordy regexp, expanded by an automated
-        #            script conversion utility from (a)
+        #       (b) The equivalent wordy regexp, expanded from (a) by an
+        #            automated script conversion utility
         #
         #       (c) The terse regexp generated from (b)
         #            This is not normally visible, but it could be shown for
@@ -535,10 +537,10 @@ sub say {
         #
         #       An automated conversion process could identify terse
         #       regexps and replace them with calls to wre() passing
-        #       both the generated ire and the original terse regexp.
+        #       both the generated wre and the original terse regexp.
         #
         #       - When the program is executed, a global switch can control
-        #         whether the generated ires or the original regexps are used.
+        #         whether the generated wres or the original regexps are used.
         #         Possible scenarios include:
         #           - Treat the generated wre as documentation only, and continue
         #             to use the original terse regexp for code execution.
@@ -546,13 +548,13 @@ sub say {
         #             incorrect conversion.
         #
         #           - Use the generated wre for code execution, but leave the
-        #             original regexp visible as documentation, e.g for
+        #             original regexp visible as documentation, e.g. for
         #             maintainers who do not understand wordy regexps.
         #
         #             However, code with a mixture of 'live' indented regexps
         #             and 'live' terse regexps needs to be avoided.
         #             If a maintainer changes the original regexp but does not
-        #             regenerate the corresponding ire, the change would be
+        #             regenerate the corresponding wre, the change would be
         #             effective only when the global switch was set to use the
         #             original regexp: it would regress when that switch was changed.
         #
@@ -606,21 +608,25 @@ sub say {
  
         ## Does wre() need options?
         ## There are regex features such as /g and /c that cannot be baked into
-        ## a qr-style regex literal, so:
+        ## a qr-style regex literal. For example:
         ##      $text =~ m/[def]/gc
-        ## cannot be replaced by an ire such as:
-        ##      $text =~ wre 'd e f'
+        ## cannot be replaced by a wre such as:
+        ##      $text =~ wre 'd e f';
         ## as there is no way for options in the wre() call to apply the /gc.
-        ## So the approach is to provide a variant wret() that returns a
-        ## reference to the terse version that can be interpolated into the
-        ## regex without needing an intermediate variable:
+        ## So the approach is to provide wret() that returns a reference to the
+        ## terse version that can be interpolated into the regex without needing
+        ## an intermediate variable:
         ##      $text =~ /${wret 'd e f'}/gc
+        ##
+        ## Note: Other modes (/i, /s, /m etc.) will be ignored because the
+        ##       values of those mode flags get baked into the regex that is
+        ##       being interpolated.
         
         
         
         ## Note that wre() returns an object, even though it is not a method.
         ## This allows a non-oo interface to take advantage of Perl's ability to
-        ## overload the use of a call to ire in a boolean context, so we can
+        ## overload the use of a call to wre in a boolean context, so we can
         ## recognise and handle the case where wre() is being implicitly used to
         ## match $_.
         
@@ -628,7 +634,13 @@ sub say {
         ## called as a method, or being passed superfluous parameters?
         ## Defering until the interface is more settled, e.g. have to
         ## decide whether there is an optional 'options' argument.
-        
+        ##
+        ## Philosophically, it's better to have everything specified in the wre,
+        ## rather than having some things that can or must be specified as
+        ## options. The counter-argument might be situations where a global
+        ## default (maybe unicode setting?) is being over-ridden - but I
+        ## can't think of a convincng use case.
+                
         my ($wre, $terse) = @_;
         
         my $self = { };
@@ -640,7 +652,7 @@ sub say {
         #
         # The size of the memo is tracked, and memoisation is halted when
         # the maximum total size is exceeded: this is to avoid runaway memory
-        # usage in situations such as an ire with constantly changing
+        # usage in situations such as a wre with constantly changing
         # interpolated content being used within an high-usage loop.
         #
         ## A more sophisticated option would be to also monitor the proportion
@@ -672,9 +684,9 @@ sub say {
         $self->{'terse'} = $qr; # Stash the qr regex literal
         
         ## If we discovered errors, report them and/or stash them.
-        ## An invalid ire should not normally be ignored. The default
+        ## An invalid wre should not normally be ignored. The default
         ## behaviour should make it hard to accidentally use the regexp
-        ## created from an invalid ire, e.g. by returning an invalid
+        ## created from an invalid wre, e.g. by returning an invalid
         ## regexp that will not compile, or will crash if used in a match.
         
         
@@ -711,7 +723,7 @@ sub new {
     
     my $self = { };
     
-    say 'in ire';    
+    say 'in wre';    
 
     $self->{'terse'} = qr/[cat]/;
     $self->{'ire'} = $wre;
@@ -767,7 +779,7 @@ sub flag_value {
     # Returns: The value of that variable in the caller's context
     #
     # This allows a user to set their desired value for
-    # a flag that affects all calls to Ire, by:
+    # a flag that affects all calls to wre, by:
     #   our $flag = 'xxx';
     # without it being affected by any other package's value for their variable
     # of the same name
@@ -1471,7 +1483,7 @@ sub _letter_class {
     #      2) True if representation needs character class
     # Passed:
     #   1) The normalised literal (letter, lc_letter, uc_letter)
-    #   2) Perl 5.14 style Unicode status:
+    #   2) Perl 5.14 style Unicode status, or undef:
     #       u:     Must use Unicode
     #       a:     Must not use Unicode, assume ASCII
     #       d:     Use default/'depends' setting
@@ -1851,7 +1863,7 @@ sub _generate_regex {
                     #   explicitly Unicode             : e.g. \p{Letter}
                     #   explicitly not Unicode = ASCII : e.g. [A-Za-z]
                     
-                    # Sometimes _letter_class will return a string (such as
+                    # Sometimes _letter_class() will return a string (such as
                     # \p{Letter} ) that will work inside or outside a character
                     # class: other times it will return a range (such as A-Z)
                     my ($force_class, $chars_format);
@@ -2227,9 +2239,9 @@ sub _generate_regex {
     # (e.g. PCRE and Perl).
     #
     # Assumes the hierarchy capture->optional->quantifiers, so that e.g.:
-    #    two or three capture digits    possibly expecting (\d){2,3}
+    #    two or three capture digit    possibly expecting (\d){2,3}
     # would treated as if it were:
-    #    capture two or three digits    actually producing (\d{2,3})
+    #    capture two or three digit    actually producing (\d{2,3})
     # The hierarchy *should* have been enforced by the parser
     #                                               1 1 1 1 1 1 1 1 1 1 2
     #                             1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0
@@ -2541,10 +2553,39 @@ sub _report_error_position {
 
 #---------------------------------------
 sub leading_spaces {
+    
+    # Count leading spaces.
+    # Tabs are treated as inserting between one and four spaces, taking the
+    # number of spaces to a multiple of four.
+    #
     my ($line_to_check) = @_;
     $line_to_check = $line_to_check || '';
-    my ($leading_spaces) = ($line_to_check =~ m/ ^ ( [ ]+ )/x );
-    return defined $leading_spaces ? length($leading_spaces) : 0;
+    my ($leading_whitespace) = ($line_to_check =~ m/ ^ ( [ \t]* )/x );
+    
+    if ($leading_whitespace =~ / ^ [ ]* $ /x) {
+        # Just spaces, so it's easy
+        return  length($leading_whitespace);
+    }
+    # We must have some tabs, possibly mixed with spaces
+    if ($leading_whitespace =~ / ^ [\t]+ $ /x) {
+        # Just tabs, so it's easy
+        return  length($leading_whitespace) * 4;
+    }
+    # Mixed tabs and spaces. Generally considered not good practice, but we do
+    # our best to handle it...
+    
+    my $space_count = 0;
+    while ($leading_whitespace =~ / (.) /gx ) {
+        my $ws = $1;
+        if ($ws eq ' ') {
+            $space_count++;
+        } else {
+            # Must be a tab
+            $space_count = ($space_count - ($space_count % 4) ) + 4;
+        }
+    }
+    return $space_count;
+    
 }
 
 #---------------------------------------
@@ -2560,7 +2601,7 @@ sub _wre_to_tre {
     #   - a string containing the equivalent conventional regular expression
     #   - a code indicating whether there were any errors, warnings or observations
     #   - if no errors or warnings: a null string
-    #     Otherwise, a string (typically multi-line) containing the input ire
+    #     Otherwise, a string (typically multi-line) containing the input wre
     #     with each line prepended with its line numbers and a colon,
     #     interspersed with any error or warning lines prepended with error: or
     #     warning:
@@ -2574,7 +2615,7 @@ sub _wre_to_tre {
     #           Perl source text, double-quoted (interpolation, escapes)
     #           Perl source text, single-quoted (escapes for \ and ')
     #       Regex options:
-    #           Any options not supplied embedded in the ire itself.
+    #           Any options not supplied embedded in the wre itself.
     #           e.g. match_part/match_all
     #   - Target environment
     #       - language
@@ -2794,7 +2835,8 @@ sub process_line {
             }
             if ($or_required || $or_allowed) {
                 # Outdent here, check if we just had an 'either' or an 'or'
-                $elder_sibling_ref->{either_end} = 1;
+                ### $elder_sibling_ref->{either_end} = 1; ### ??? ###
+                $child_ref->{either_end} = 1;
             }
         }
         $elder_sibling_ref = $child_ref;
@@ -2833,7 +2875,7 @@ sub slurp_file {
     my @ire_lines;
     
     sub load_ire_lines {
-        # Passed a string contining an ire
+        # Passed a string contining a wre
         # Splits it into lines and stores them in the shared array
         # Re-initialiises other read_line variables as necessary
         
@@ -2855,31 +2897,9 @@ sub slurp_file {
         }
         if (defined $rl_line) {
             chomp $rl_line;
-            $rl_indent = leading_spaces($rl_line);
-            $rl_line =~ s/ ^ [ ]+ //x;     # Discard leading spaces
-        } else {
-            $rl_indent = -1;
-        }
-        return ($rl_line, $rl_indent, $rl_comment_lines);
-    }
-    
-    sub read_line_OLD {
-        my $rl_line = <>;
-        my $rl_indent = 0;
-        my $rl_comment_lines = '';
-        
-        if ( ! defined $rl_line) {
-            return ($rl_line, -1, '');
-        }
-        while (defined $rl_line && $rl_line =~ m/ ^ \s* (?: [#\n] | \z )  /x) {
-            # Skip whitespace-only and comment-only lines
-            $rl_comment_lines .= $rl_line;
-            $rl_line = <>;
-        }
-        if (defined $rl_line) {
-            chomp $rl_line;
-            $rl_indent = leading_spaces($rl_line);
-            $rl_line =~ s/ ^ [ ]+ //x;     # Discard leading spaces
+            $rl_indent = leading_spaces($rl_line);  # Count leading spaces or
+                                                    #  equivalent of tabs
+            $rl_line =~ s/ ^ [ \t]+ //x;     # Discard leading spaces and tabs
         } else {
             $rl_indent = -1;
         }
@@ -2920,7 +2940,7 @@ sub normalise_hash_contents {
 #  Module
 #   convert_ire_to_terse is passed a complete string
 #   convert_ire_to_terse:
-#       splits passed ire string into array of lines used by read_line
+#       splits passed wre string into array of lines used by read_line
 #       calls
 
 #   read_line pops one line at a time
@@ -2969,7 +2989,7 @@ To Do:
     Required for Usefulness
     
         Architectural change to be a module, supporting utilities that allow
-        ires to be passed in via a file, embedded in source, or directly from
+        wres to be passed in via a file, embedded in source, or directly from
         a user e.g. using a web browser.
         
     Required to support standard regex features
@@ -3016,21 +3036,21 @@ To Do:
             treated as meta-characters.
             
             This works for the situation where a generated conventional regex is
-            embedded into the converted code: it doesn't work where the ire is
+            embedded into the converted code: it doesn't work where the wre is
             converted dynamically, unless the interpolated variables are passed
             as extra parameters to the dynamic conversion routine (as the module
             cannot determine the value of $name in the caller's context).
 
             
-            Any memoisation done would need to include the current value of the
-            interpolated variable. So the ire with the $name would not be itself
-            be memoised, but the entire ire with the interpolated value(s) would
+            Memoisation would need to include the current value of the
+            interpolated variable. So the wre with the $name would not be itself
+            be memoised, but the entire wre with the interpolated value(s) would
             be. Simple handling of interpolation would risk the memo size limits
             being reached by ineffective memoisation of one regexp that would
-            then prevent further additions to the memo: specail handling of ires
+            then prevent further additions to the memo: specail handling of wres
             that have interpolated variables might reduce this risk. One very
             crude approach would be 'do not memo' options that prevent memoing
-            of either a specific ire with interpolation, or of all such ires.
+            of either a specific wre with interpolation, or of all such wres.
             
         Multiple Matches ( /g )
         Iterative Matching ( /g  /gc  and  \G )
@@ -3038,8 +3058,30 @@ To Do:
             If the generated regex is just used in a Perl script, that script
             can use /g in a list context (to get multiple matches) or /g or /gc
             in a scalar context (to get iterative matching). The keyword
-            'end_of_previous_match' can be used to get \G.
-        
+            'end_of_previous_match' (or eopm) can be used to get \G.
+            
+            The wret() routine returns a reference to the terse regex, which can
+            be interpolated into a regex that has /g or /gc flags.
+            
+                while ($data =~ /${wret "capture a b c"}/g) {
+                    print "# next abc letter: $1\n"
+                }
+
+            This can be useful when a terse regex is being replaced by a wordy,
+            as it allows the replacement to be done without requiring an
+            intermediate variable. For manual replacement, adding a variable
+            that contains the regex has simpler syntax. It doesn't require the
+            wordy to be within slashes and curlies as well as quotes.
+                        
+                my $abc_regex = wre "capture a b c";
+                while ($data =~ /$abc_regex/g) {
+                    print "# next abc letter: $1\n"
+                }
+                
+            ...but for automated replacement, adding an intermediate variable
+            can be problematic, e.g. after an elsif. Even just deciding on a
+            sensible name can be difficult to automate.
+            
         Properties
         Unicode mode handling (check whether complete)
         Ordering of string/char class items - maybe do multiple classes if
@@ -3071,36 +3113,43 @@ To Do:
         Prettier output
              Getting trailing quantifiers on their own lines would be a good start
              
-        'then' keyword: allows simple sequence on a single line of an ire
+        'then' keyword: allows simple sequence on a single line of a wre
             e.g. two digits then : then two digits then opt 'am' 'pm'
             Definition is 'indent equally, except also indent from either/or'
-            So:  'as hh one or two digits then : then as mm two digits'
+            So:
+                'as hh one or two digits then : then as mm two digits'
             becomes:
                  as hh two digits
                  :
                  as mm two digits
             
-            Note that:  'as time-hhmm one or two digits then : then two digits
+            Note that:
+                 as time-hhmm one or two digits then : then two digits
             becomes:
                  as time-hhmm two digits
                  :
-                 as mm two digits
-            which is probably not what the user wants.
+                 two digits
+            which is probably not what the user wants. They would have to write:
+                 as time-hhmm
+                    one or two digits then : then two digits
+            to capture the hh:mm value in a single capture.
             
 
             'then' interacts wth either/or, as it binds more tightly
                 either two a then b
-                or c then three d
+                or     c then three d
+                four e
             is equivalent to:
                 either
-                       two a
-                       b
+                   two a
+                   b
                 or
                    c
                    three d
+                four e
             
-            Similarly:
-                either two
+            Any line with a 'then' is not allowed anything indented from it:
+            there should be at least one matcher before the 'then'.
                     
             
                 
@@ -3448,24 +3497,24 @@ To Do:
                 New code, complex regexes
                 Maintain existing code, simple to medium regexes
                 Maintain existing code, complex regexes
-                Convert existing code from cre to ire
+                Convert existing code from cre to wre
         
             Aims:
                 - Keep it as similar to existing cre usage as far as possible
-                - Allow the user to put the ire in the code and have the cre
+                - Allow the user to put the wre in the code and have the cre
                   created invisibly behind the scenes
                 - Allow the user to use the generated cre in the code directly,
-                  but include the ire from which it was generated as a comment
+                  but include the wre from which it was generated as a comment
                 - Allow the user to use the generated cre in the code directly,
-                  without the ire from which it was generated being shown
-                - Allow the user to put the ire in the code, but with the
+                  without the wre from which it was generated being shown
+                - Allow the user to put the wre in the code, but with the
                   original cre visible as comment text - either in parallel with
-                  the ire or as as a separate comment block
+                  the wre or as as a separate comment block
               
             Method 1: 
                User runs a utility, passes it the input in a text file, or as text
                to stdin.
-               Utility sends conventional regex (and optionally the ire) to stdout.
+               Utility sends conventional regex (and optionally the wre) to stdout.
                User takes output and pastes it into code.
                
             Method 2: 
@@ -3494,14 +3543,14 @@ To Do:
                 in place, and creates an updated source file the user can
                 download and save.
                 
-            IRE to CRE Direction:
+            wre to CRE Direction:
                 Indented regex might already have a conventional regex, e.g. the
-                ire might be present as /x comments on a conventional regex, or
+                wre might be present as /x comments on a conventional regex, or
                 as a comment block. The conventional regex would be ignored.
                 
-            CRE to IRE Direction:
+            CRE to wre Direction:
                 Conventional regex might already have an indented  regex, e.g. the
-                cre might have the ire as /x comments. The indented regex would
+                cre might have the wre as /x comments. The indented regex would
                 be ignored.
         
         Unicode approach
@@ -3521,7 +3570,7 @@ To Do:
               routine.
             - Should we have a pragma or equivalent, that changes the mode for
               all indented regexes within its scope? e.g.:
-                    use Regex::IRE (:ascii)
+                    use Regex::Wre (:ascii)
             - Is 'ascii' the right keyword to use for Perl's /a mode?
             - Conventional Perl regexes can specify (for example) digit as \d
               or as \p{}, so the same regex could mix unicode and ascii-only.
@@ -3573,7 +3622,7 @@ To Do:
                     - unicode
                     
                 For Perl at least, it's quite dodgy to have non-ASCII digits
-                match \d (in legacy regexes) or the keyword 'digit' (in ires),
+                match \d (in legacy regexes) or the keyword 'digit' (in wres),
                 as the common use case is that the digits will then be used for
                 arithmetic. But if they are non-ASCII digits or a mixture of
                 ASCII and non-ASCII digits, then Perl will not do the right thing
@@ -3641,26 +3690,26 @@ To Do:
 ========= Interfacing ===========
 
  Terminology and Naming
-    Regexp::Ire
+    Regexp::Wre
     'Compressed' or 'terse' for conventional regexes?
     'Expanded' for indented regexes?
  
  Pathways for existing code:
  
   For any language:
-    Use utility to 'explain' an existing regex by converting to ire
+    Use utility to 'explain' an existing regex by converting to wre
     Embellish existing code with comments showing
-      - the equivalent ire
-      - what that ire would generate (in case it's wrong)
+      - the equivalent wre
+      - what that wre would generate (in case it's wrong)
  
- For language(s) with an ire library (Probably just Perl for a while)
+ For language(s) with a wre library (Probably just Perl for a while)
  
-    Auto change existing code to use ire directly, but
+    Auto change existing code to use wre directly, but
        - leave previous regex as comment (in case conversion is wrong)
        - show generated regex (in case generation is wrong)
-    Auto change existing code to use ire directly, 
+    Auto change existing code to use wre directly, 
        - leave previous regex as comment (in case conversion is wrong)
-    Auto change existing code to use ire directly. Discard original regex
+    Auto change existing code to use wre directly. Discard original regex
 
  Pathways for new code
  
@@ -3693,20 +3742,20 @@ To Do:
             my $cat_qr_regex = qr/[cat]/i; # case-insensitive
             my $match = $a =~ /$cat_qr_regex/; # still case-insensitive
             
-            # Possible replacement ire calls that return qr literals
-            my $match = $a =~ ire("c a t", {uncased => 1}); # PBP-style option list
-            my $match = $a =~ ire("uncased c a t");  # option part of ire itself
+            # Possible replacement wre calls that return qr literals
+            my $match = $a =~ wre("c a t", {uncased => 1}); # PBP-style option list
+            my $match = $a =~ wre("uncased c a t");  # option part of wre itself
 
         Options: /i /m /s/ /x /o /g /c /d /u /a /aa /l /p
         
-        /i      Cased / uncased in ire
-        /m  /s  Not needed in ire
-        /x      Does not affect ire, except could pass comments
+        /i      Cased / uncased in wre
+        /m  /s  Not needed in wre
+        /x      Does not affect wre, except could pass comments
         /o      Once-only: optimisation hint
         /g  /c  Global, global don't reset on match failure
                  
         /d  /u  /a  /aa /l
-                Unicode options in ire
+                Unicode options in wre
         
         
  OO Interface
@@ -3714,23 +3763,23 @@ To Do:
     
 
  Does the user want entire string match ?      
- Does the ire already have sos/eos (or eosx) ? 
- Does the ire contain any named captures ?
- Does the ire contain any unnamed captures ?
+ Does the wre already have sos/eos (or eosx) ? 
+ Does the wre contain any named captures ?
+ Does the wre contain any unnamed captures ?
  Is this an iterative match ?
  What options (/i /m /s /o /x /g /c ) has the user supplied ?
 
  Does the regex have any interpolation ?
  Is the regex entirely a single variable being interpolated ?
  Is the interpolated regex a regex literal already ?
-   If so, we know it's not an ire
+   If so, we know it's not a wre
 
  Are we converting existing code?
  How are the regex(es) delimited?
  What language is the code in? What version of that language?
- Should we replace the legacy regexes with equivalent ire's?
+ Should we replace the legacy regexes with equivalent wre's?
  Should we leave the original hand-written legacy regexes visible as comments?
- Should we just add ire's as comments and leave the existing code untouched?
+ Should we just add wre's as comments and leave the existing code untouched?
  Should we show the generated regexes, even if we don't have to?
    e.g. if we call a routine that generates them dynamically 
 
@@ -3743,7 +3792,7 @@ To Do:
    This severely constrains what replacement can be done, unless major parsing
    was also done.
 
-   $1  $ 2 etc.
+   $1  $2 etc.
 
    $& $MATCH     entire matched string                  Slows Perl, avoid
    $` $PREMATCH  everything before the matched string   Slows Perl, avoid
@@ -3790,8 +3839,8 @@ Design Aims
 
     * No Punctuation Soup *
     
-    The aim is to provide an alternative notation (Reword) for regular
-    expressions that is easier than the conventional notation.
+    The aim is to provide an alternative notation (wordy regular expressions)
+    that is easier than the conventional regular expression notation.
     
     Regular expressions are really a special-purpose programming language, but
     one that is declarative rather than procedural: the user tells the regex
@@ -3975,22 +4024,22 @@ end-of-string
 ...
 
 
-sub ire_sample {
+sub wre_sample {
     '\A(?<hours>\d{1,2}):(?<minutes>\d{2})(?::(?<seconds>\d{2}))?(?:[ ]*[ ]*[ ]?[ ]?[ ]*(?<am_pm> (?i: am | pm | a\.m\. | p\.m\. )))?\z';
 }
 
 sub sample_b {
 #   Samples of possible interfaces
 #
-#   ire(string) returns a string containing the regex
+#   wre(string) returns a string containing the regex
 #
 #   The generated string is not visible, so there is no point in making it
 #   free-form - so no need for /x mode when it is used.
 #
-#   ire() has to be responsible for any caching/memoisation, otherwise the
-#   complete generation process will be repeated each time ire is invoked.
+#   wre() has to be responsible for any caching/memoisation, otherwise the
+#   complete generation process will be repeated each time wre is invoked.
     my $data = "12:52:30";
-    my $h_m_s_re = ire_sample("
+    my $h_m_s_re = wre_sample("
         start-of-string
         capture
             one or two digits
@@ -4012,7 +4061,7 @@ sub sample_b {
 
     my $pause2 = 2;
 
-#   ire(string) returns a string containing the regex
+#   wre(string) returns a string containing the regex
 #
 #   The generated string is not visible, so there is no point in making it
 #   free-form - so no need for /x mode when it is used.
@@ -4025,7 +4074,7 @@ sub sample_b {
 
 =for Perl 5.10+
     my $data_2 = "13:53:31 pm";
-    state $h_m_s_re_2 = ire("
+    state $h_m_s_re_2 = wre("
         start of string
         capture as hours
             one or two digits
@@ -4066,7 +4115,7 @@ my $pause2_2 = 2;
 # access the reformatted data would be messy.
 
 if (0) {
-    my $re_date = Regexp::Ire->new('date dmy');     # dmy implies loose date allowed
+    my $re_date = Regexp::Wre->new('date dmy');     # dmy implies loose date allowed
     my $sample_date = "23rd December 2012";
     if ($re_date->matches_all($sample_date)) {
         # Date matches regex completely
@@ -4113,7 +4162,7 @@ if (0) {
     # The 'epoch' implies both that the input will be a date or timestamp,
     # and that reformatting should be done (at least if the input isn't just a
     # number). Maybe the default is any format date with some way of defaulting
-    # to dmy or mdy. But this is really straining the design of ire's
+    # to dmy or mdy. But this is really straining the design of wre's
     my $date = matches_all('23/12/2011', 'epoch');
 }
 
@@ -4720,7 +4769,7 @@ advantage of their absence if that suited.
    or at least not automatically providing plain 'match' unless specifically
    requested by something like use RegExp::Ire qw{ match }
 
-   If ires are going to be largely language-independent, then the syntax needs
+   If wres are going to be largely language-independent, then the syntax needs
    to work for all of them. Explicitly including start-of-string and
    end-of-string should never cause an issue: the question is what should we do
    when they are not both present (and for some nasty corner cases such
@@ -5916,27 +5965,27 @@ used to the terse notation used to express these concepts.
 ==============================================================================
 Documentation
     For newbies to regular expressions
-        - an intro to regexes, using ire examples
+        - an intro to regexes, using wre examples
         
-        - how to use the tools for converting an ire to a terse regex
+        - how to use the tools for converting a wre to a terse regex
         
-        - how to write new code using ires
+        - how to write new code using wres
             - procedural routines
             - oo interface
         
-        - how to use the tools for converting terse regexes to ires,
+        - how to use the tools for converting terse regexes to wres,
             e.g. when working on an existing program that has terse regexes
             Using the terse-to-ire tools:
                 - standalone, one regex at a time
-                - to add ires as comments to existing code
-                - to replace terse regexes with equivalent ires
+                - to add wres as comments to existing code
+                - to replace terse regexes with equivalent wres
                 
     For users working with existing code containing terse regexs
     
-        - an intro to ires, with examples showing ire and terse versions
+        - an intro to wres, with examples showing wre and terse versions
         
-        - how to use the tools for converting a terse regex to an ire
-        - how to use the tools for converting an ire to a terse regex
+        - how to use the tools for converting a terse regex to a wre
+        - how to use the tools for converting a wre to a terse regex
     
     
     Formal, exhaustive
@@ -5952,23 +6001,23 @@ Documentation
 
 Procedural Interface
 
-  The ire() function
+  The wre() function
     
-    This is passed an ire, and returns the equivalent terse regex. So where you
-    would have written a terse regex you put a call to ire(), passing it the
-    equivalent ire.
+    This is passed a wre, and returns the equivalent terse regex. So where you
+    would have written a terse regex you put a call to wre(), passing it the
+    equivalent wre.
     
     Options that would be appended to a terse regex (such as /i /s /m etc.) are
-    generally passed as part of the ire. The exceptions are /g and /gc, which
-    affect how the regex is used: they are best handled by using iret() instead.
+    generally passed as part of the wre. The exceptions are /g and /gc, which
+    affect how the regex is used: they are best handled by using wret() instead.
     
-  The iret() function
+  The wret() function
     
-    This is passed an ire and returns a reference to the equivalent terse regex.
-    It is intended to be used as an alternative to ire() in a match where /g or
+    This is passed a wre and returns a reference to the equivalent terse regex.
+    It is intended to be used as an alternative to wre() in a match where /g or
     /gc are required:
     
-        if ( $data =~ qr/${iret 'a b c'}/gc ) {...}
+        if ( $data =~ qr/${wret 'a b c'}/gc ) {...}  ## Doesn't work!!
     
     
     

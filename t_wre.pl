@@ -67,6 +67,10 @@ Test Types
 =cut
 
 
+my $parms = shift;
+my $selected_group = $parms || '';
+
+
 my $schema = <<'EOSCHEMA';
 overall:
 groups:
@@ -119,6 +123,7 @@ groups:
     - group-name: Examples terse-to-wordy A
       terse-to-wordy: true
       tests:
+                        
         - name: Test 0
           terse: |
               \G \# ( .* ) 
@@ -182,7 +187,28 @@ groups:
     - group-name: Examples wordy-to-terse
       wordy-to-terse: true
       tests:
-      
+        - name: capture-optional-a
+          terse: |
+              ( (?: dog | a )?)
+          terse-options: x
+          wordy: |
+            capture
+                optional
+                    a 'dog'
+        - name: optional-capture-a
+          terse: |
+              (   dog | a )?
+          terse-options: x
+          wordy: |
+            optional
+                  capture
+                      a 'dog'
+        - name: Range using 'to'
+          terse: |
+              [a-zA-Z0-9\x{02}-\x{10}]
+          terse-options: x
+          wordy: |
+              a-z A-Z 0-9 hex-02 to hex-10       
         - name: Quoted string, free spacing mode
           notes: 
           wordy: |
@@ -197,7 +223,7 @@ groups:
 
           terse-options: x
           # Note the terse output is really one long string, but we input it
-          # using a YAML block that puts a single spce between each line
+          # here using a YAML block that puts a single space between each line
           terse: >
             Plain quoted string
             Mrs\. O'Grady said "Hello!"
@@ -267,7 +293,7 @@ groups:
             capture
                 zero or more  non-newline
           terse: |
-            [(]((?:[A-Za-z]|[ivx]{1,3})|\d{1,2})[)][ ]+([^\n]*)
+            [(]((?:[A-Za-z]|[ivx]{1,3}|\d{1,2}))[)][ ]+([^\n]*)
           matches:
             -
               global: true
@@ -287,7 +313,7 @@ groups:
                 - The Pine
 
         - name: Paragraph numbers and headings, full unicode
-          notes: Test doesn't include unicode character because YAML::XXS:Load barfs
+          notes: Test doesn't include unicode character because YAML::XS:Load barfs
           wordy: |
             full-unicode
                 (
@@ -300,7 +326,7 @@ groups:
                 capture
                     zero or more  non-newline
           terse: |
-            (?u:[(]((?:(?:\p{Letter})|[ivx]{1,3})|\d{1,2})[)][ ]+([^\n]*))
+            (?u:[(]((?:(?:\p{Letter})|[ivx]{1,3}|\d{1,2}))[)][ ]+([^\n]*))
           matches:
             -
               global: true
@@ -526,6 +552,16 @@ groups:
                 named-matches:
                     alias: Perlbug
                     value: perl5-porters@perl.org
+            -
+                data: |
+                    alias Perlbug perl5-porters@perl.org=Perlbugfree
+                named-matches:
+                    alias: Perlbug
+                    value: perl5-porters@perl.org
+            -
+                data: |
+                    alias Perlbug perl5-porters@perl.org=perlbug
+                match: false
             -
                 data: |
                     alias Prez president@whitehouse.gov=Prez
@@ -1231,7 +1267,7 @@ groups:
           terse-options: x
           wordy: |
               a-z A-Z 0-9 range hex-02 to hex-10
-              
+           
         - name: Test 44
           terse: |
               [a-q ]
@@ -2264,35 +2300,35 @@ groups:
         - name: Test 120
           terse: |
               
-                          # Terse regexp version with additional punctuation
-                          # For this example with consistent layout and very little nesting,
-                          #  it is debatable whether the wre version has a significant advantage
-                          #  apart from the named captures
-                          ^ --
-                          \s  appl     \s+ = \s+ (\S*)                                 # application
-                          \s+ host     \s+ = \s  (\S*)                                 # host
-                          \s+ user     \s+ = \s+ (\S*) [/]                             # user
-                          \s+ pid      \s+ = \s+ (\d+)                                 # pid
-                          \s+ elapsed  \s+ = \s+ (\d+\.\d+) \s+ seconds                # elapsed
-                          \s+ rows     \s+ = \s+ (\d+)                                 # rows
-                          \s+ tran     \s+ = \s+ (\d+)                                 # tran
-                          \s+ server   \s+ = \s+ (\S+)                                 # server
-                          \s+ database \s+ = \s+ (\S*)                                 # database
-                          \s+ client   \s+ = \s+ (\d+ [.] \d+ [.] \d+ [.] \d+) [/] \d+ # client IP
-                          \s+ (\w+)                                                    # operation type (CONNECT TRAN etc)
-                          \s+ \w\w\w  \s+ \w\w\w \s+ \d+ \s+ (\d+ : \d+ : \d+ [.] \d+) # start time
-                          \s+ \d+ \s+ - \s+ \w\w\w \s+ (\w\w\w)                        # end month
-                          \s+ (\d+)                                                    # end day of month
-                          \s+ (\d+ : \d+ : \d+ [.] \d+)                                # end time
-                          \s+ (\d+)                                                    # end year
-                          \s+ .* send         \s+ = \s+ (\d+ [.] \d+) \s+ sec          # send time
-                          \s+ receive         \s+ = \s+ (\d+ [.] \d+) \s+ sec          # receive time
-                          \s+ send_packets    \s+ = \s+ (\d+)                          # send packets
-                          \s+ receive_packets \s+ = \s+ (\d+)                          # receive packets
-                          \s+ bytes_received  \s+ = \s+ ([-]* \d+)                     # bytes received (sometimes negative!)
-                          \s+ errors          \s+ = \s+ (\d+)                          # errors
-                          \s+ ((sid) \s+ = \s+ (\d+) |                                 # sid (Oracle only) or
-                               (\S+))                                                  # sql type (prepared-sql, cursor, etc)
+            # Terse regexp version with additional punctuation
+            # For this example with consistent layout and very little nesting,
+            #  it is debatable whether the wre version has a significant advantage
+            #  apart from the named captures
+            ^ --
+            \s  appl     \s+ = \s+ (\S*)                                 # application
+            \s+ host     \s+ = \s  (\S*)                                 # host
+            \s+ user     \s+ = \s+ (\S*) [/]                             # user
+            \s+ pid      \s+ = \s+ (\d+)                                 # pid
+            \s+ elapsed  \s+ = \s+ (\d+\.\d+) \s+ seconds                # elapsed
+            \s+ rows     \s+ = \s+ (\d+)                                 # rows
+            \s+ tran     \s+ = \s+ (\d+)                                 # tran
+            \s+ server   \s+ = \s+ (\S+)                                 # server
+            \s+ database \s+ = \s+ (\S*)                                 # database
+            \s+ client   \s+ = \s+ (\d+ [.] \d+ [.] \d+ [.] \d+) [/] \d+ # client IP
+            \s+ (\w+)                                                    # operation type (CONNECT TRAN etc)
+            \s+ \w\w\w  \s+ \w\w\w \s+ \d+ \s+ (\d+ : \d+ : \d+ [.] \d+) # start time
+            \s+ \d+ \s+ - \s+ \w\w\w \s+ (\w\w\w)                        # end month
+            \s+ (\d+)                                                    # end day of month
+            \s+ (\d+ : \d+ : \d+ [.] \d+)                                # end time
+            \s+ (\d+)                                                    # end year
+            \s+ .* send         \s+ = \s+ (\d+ [.] \d+) \s+ sec          # send time
+            \s+ receive         \s+ = \s+ (\d+ [.] \d+) \s+ sec          # receive time
+            \s+ send_packets    \s+ = \s+ (\d+)                          # send packets
+            \s+ receive_packets \s+ = \s+ (\d+)                          # receive packets
+            \s+ bytes_received  \s+ = \s+ ([-]* \d+)                     # bytes received (sometimes negative!)
+            \s+ errors          \s+ = \s+ (\d+)                          # errors
+            \s+ ((sid) \s+ = \s+ (\d+) |                                 # sid (Oracle only) or
+                 (\S+))                                                  # sql type (prepared-sql, cursor, etc)
                               
           terse-options: x
           wordy: |
@@ -2730,9 +2766,126 @@ groups:
               or
                   capture as sql_type
                       one or more  non-whitespace
-              
 
+    - group-name: Adhoc
+      wordy-to-terse: true
+      tests:
+        - name: Either/or at end of wordy
+          terse: |
+              (?:aa\d|bb\w|b2|b3)cc(?:dd\D|ee|ff\d) 
+          terse-options: -x
+          wordy: |
+              either
+                  'aa'
+                  digit
+              or
+                  'bb'
+                  word-char
+              or  'b2'
+              or  'b3'
+              'cc'
+              either
+                  'dd'
+                  non-digit
+              or 'ee'
+              or
+                  'ff'
+                  digit
+        - name: Either/or at end of wordy 2
+          terse: |
+              (?:aa\d|bb\w)cc(?:dd\D|ee|ff|ww) 
+          terse-options: -x
+          wordy: |
+              either
+                  'aa'
+                  digit
+              or
+                  'bb'
+                  word-char
+              'cc'
+              either
+                  'dd'
+                  non-digit
+              or 'ee'
+              or 'ff'
+              or 'ww'
+
+        - name: Either/or not at end of wordy
+          terse: |
+              (?:aa\d|bb\w)cc(?:dd\D|ee|ff\d)gg
+          terse-options: -x
+          wordy: |
+              either
+                  'aa'
+                  digit
+              or
+                  'bb'
+                  word-char
+              'cc'
+              either
+                  'dd'
+                  non-digit
+              or 'ee'
+              or
+                  'ff'
+                  digit
+              'gg'
 EOTESTS
+
+my $data = 'a B d c E h b m';
+my $w = wret 'a b c';
+
+# $data =~ s/${wret 'a b c'}//);
+$data =~ s/${wret 'uncased e h'}/k/gx;
+
+
+# $data =~ s/${wre 'b'}/k/gx;  # Fails because wre does not return a reference
+
+my $wre_obj = wre 'uncased b';
+$data =~ s/$wre_obj/k/gx;  # OK, as $wre_obj interpolates as a qr-literal
+eval {
+    $data =~ s/${wre 'uncased b'}/k/gx;  # Fails because wre does not return a reference
+};
+print "wre(): $@";
+
+eval {
+    $data =~ s/${wret 'uncased b'}/k/gx;  # OK because wret returns a reference
+};
+print "wret(): $@";
+
+$data =~ s/${wret 'b'}/k/gx;
+
+$data =~ s/[ ]/q/g;
+$w = wret "capture a b c";
+while ($data =~ /${wret "capture a b c"}/g) {
+    print "# next abc letter: $1\n"
+}
+while ($data =~ /${wret "as let a b c"}/g) {
+    print "# next letter: $+{let}\n"
+}
+
+
+while ($data =~ /${wret "\tas let\n  \ta b c"}/g) {
+    # Tab rules mean that 'a b c' is not indented from 'as let'
+    # So we don't capture anything: there is an error message, but it is not
+    # checked for
+    print "# dodgy next letter: $+{let}\n"
+}
+
+
+while ($data =~ /${wret "      as let\n\t   a b c"}/g) {
+    print "# tabby next letter: $+{let}\n"
+}
+
+while ($data =~ /${wret "      as let\n  \t   a b c"}/g) {
+    print "# tabby2 next letter: $+{let}\n"
+}
+
+my @n = ( $data =~ /[^x]/g );
+if ( $data =~ /${wret 'a b c'}/g ) {
+    my $pause = 1
+};
+
 
 my $v = YAML::Validator->new($schema);
 
@@ -2744,6 +2897,7 @@ my $data_loaded = $p->{groups}[0]{tests}[0];
 my $groups_ref = $p->{groups};
 for my $group_ref ( @{$groups_ref}) {
     my $group_name = $group_ref->{'group-name'} || '<unnamed>';
+    next if $selected_group && (lc($group_name) ne lc($selected_group)); # --->>>>
     my $group_wordy_to_terse = $group_ref->{'wordy-to-terse'};
     my $group_terse_to_wordy = $group_ref->{'terse-to-wordy'};
     log_text ("Starting group: $group_name");
@@ -2775,7 +2929,7 @@ for my $group_ref ( @{$groups_ref}) {
                     ## Might need to call a more complex routine, e.g. to handle
                     ## errors more elegantly
                     my $terse_options = $test_ref->{'terse-options'} || '';
-                    my $free_space = $terse_options =~  / [^-]* x /x;
+                    my $free_space = $terse_options =~  /  ^ [^-]* x /x;
                     my $generated_tre = _wre_to_tre($wordy,
                                                     {free_space     => $free_space,
                                                      embed_original => 0,
