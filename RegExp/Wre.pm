@@ -13,13 +13,68 @@
     #   '0+'       =>  \&_num,
        'nomethod' =>  \&_other,
        ;
-    our $magic;
-
+    use Carp;
 
 our $VERSION = '2012.10.08';
 
 
 =format
+
+NAME:
+    Wre
+
+SYNOPSIS:
+
+    Procedural interface:
+        
+        
+        wre() is the main procedural interface routine. You pass it a wordy
+        regular expression, and it returns an object that can be used where you
+        would otherwise use a conventional (terse) regular expression.
+        
+        # Decide if the contents of $data matches your wordy regexp
+        if ($data =~ wre '<your wordy regexp>')  { ... }
+        
+        # Decide if the contents of $_ matches your wordy regexp
+        if (wre '<your wordy regexp>')  { ... }
+        
+        # Assign the regexp to a scalar, then use it later
+        my $wre_1 = wre '<your wordy regexp>';
+        if ($data =~ /$wre_1/)  { ... }
+        
+        # Use the regex with global mode (/g) 
+        while ($data =~ /$wre_1/g) {
+            print "$1\n";
+        }
+        
+        wret() is an alternative routine that is only needed in the situation
+        where:
+            (1) you want to put your wordy regexp directly in-line, rather than
+                assign the regexp to an intermediate variable, and
+            (2) you need to use the global mode (/g)
+            
+        while ($data =~ /${wret '<your wordy regexp>'}/g) {
+            print "$1\n";
+        }
+        
+    OO interface:
+    
+        
+
+DESCRIPTION:
+
+
+
+INSTALLATION
+METHODS
+PROJECT DEVELOPMENT
+AUTHOR
+COPYRIGHT
+LICENCE
+DISCLAIMER OF WARRANTY 
+
+
+
 
     WRE: Wordy Regular Expression Notation
     --------------------------------------
@@ -163,41 +218,6 @@ my $LT_BACKREF    = 'backref';  # A back-reference
 my %LIT_TYPE_SINGLE_CHAR =
          ($LT_CHAR => 1, $LT_CONTROL => 1, $LT_HEX => 1,$LT_OCTAL => 1);
 
-
-{ # naked block for tokeniser
-my $line = '';
-
-my $line_has;                   # Bit mask
-my $LINE_HAS_CAPTURE      = 1;   # Line has 'capture'
-my $LINE_HAS_MODE         = 2;   # Line has explicit mode(s)
-my $LINE_HAS_QUANTIFIER   = 4;   # Line has explicit quantifier
-my $LINE_HAS_OPTIONAL     = 8;   # Line has explicit 'optional'
-my $LINE_HAS_BEEN_NEGATED = 16;  # Line has 'not' or a synonym
-my $LINE_HAS_LITERAL      = 32;  # Line has at least one literal
-
-my $LINE_HAS_SEQUENCE_LITERAL
-                          = 64;  # Line has at least one quoted literal that has
-                                 # more than one character
-my $LINE_HAS_ANYTHING     = 128; # Line has 'character' or an equivalent
-my $LINE_HAS_ASSERTION    = 256; # Line has at least one assertion
-
-my $capture_count = 0;
-
-my $token = '';
-my $token_raw;
-my $token_flags;
-my $prev_token = '';
-my $prev_prev_token = '';
-my $delimiter = '';
-
-my $token_type;
-my $word_is_plural;             # True if word found in plural list, e.g. HASHES or LETTERS
-my $word_is_negated;
-my $literal_is_a_digit;
-my $literal_is_a_letter;
-
-my $token_lc;
-
 my $TT_COMMENT     = 'comment';
 my $TT_LITERAL     = 'literal'; # Solo character, or quoted sequence, or named character
 my $TT_ASSERTION   = 'assertion';
@@ -211,243 +231,322 @@ my $TT_WORD_HYPHEN = 'word_hyphen';
 my $TT_ERROR       = 'error';   # Syntax error detected by get_next_token
 my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
                                 # (not to be confused with the token EOL)
-my $literal_type;               #    text: values are 'char' 'group'
-                                #                 'seq' 'control' 'hex' 'octal'
-                                #                 'matcher' (e.g. assertion)
-                                #                 'backref'
-                                #                 'range' (range token, such as 0-8)
 
+{ # naked block for tokeniser
+    my $line = '';
+    my $token_pos = 0;
+    
+    my $line_has;                   # Bit mask
+    my $LINE_HAS_CAPTURE      = 1;   # Line has 'capture'
+    my $LINE_HAS_MODE         = 2;   # Line has explicit mode(s)
+    my $LINE_HAS_QUANTIFIER   = 4;   # Line has explicit quantifier
+    my $LINE_HAS_OPTIONAL     = 8;   # Line has explicit 'optional'
+    my $LINE_HAS_BEEN_NEGATED = 16;  # Line has 'not' or a synonym
+    my $LINE_HAS_LITERAL      = 32;  # Line has at least one literal
+    
+    my $LINE_HAS_SEQUENCE_LITERAL
+                              = 64;  # Line has at least one quoted literal that has
+                                     # more than one character
+    my $LINE_HAS_ANYTHING     = 128; # Line has 'character' or an equivalent
+    my $LINE_HAS_ASSERTION    = 256; # Line has at least one assertion
+    
+    my $capture_count = 0;
+    
+    # Beware that these are effectively singleton global variables, but they are
+    # used by routines that recurse for each level of indentation. So their
+    # values (whether accessed directly or by an accessor routine) are only
+    # useful between when gnt() was called and the next level of recursion.
+    
+    my $token = '';
+    my $token_raw;
+    my $token_flags;
+    my $prev_token = '';
+    my $prev_prev_token = '';
+    my $delimiter = '';
+    
+    my $token_type;
+    my $token_start_pos;
+    my $word_is_plural;             # True if word found in plural list, e.g. HASHES or LETTERS
+    my $word_is_negated;
+    my $literal_is_a_digit;
+    my $literal_is_a_letter;
+    
+    my $token_lc;
+    
 
-my $literal_char_case;          # Set if char class letter
-my $LLC_CAPITAL    = 'upper';   # Upper case letter
-my $LLC_SMALL      = 'lower';   # Lower case letter
-
-my %digits = (zero => 0,
-              one  => 1, two   => 2, three => 3, four => 4, five => 5,
-              six  => 6, seven => 7, eight => 8, nine => 9);
-
-my %numbers = (ten      => 10, eleven   => 11, twelve  => 12, thirteen  => 13,
-               fourteen => 14, fifteen  => 15, sixteen => 16, seventeen => 17,
-               eighteen => 18, nineteen => 19);
-
-my %multiples_of_ten = (twenty => 20, thirty  => 30, forty  => 40, fifty  => 50,
-                        sixty  => 60, seventy => 70, eighty => 80, ninety => 90);
-
-# Normalised, anglicised, lower-cased keywords
-# Converts synonyms to standard form
-my %synonyms = (ch     => 'character', chs        => 'characters',
-                char   => 'character', chars      => 'characters',
-                opt    => 'optional' , optionally => 'optional'  ,
-                thru   => 'to'       , through    => 'to'        ,
-                get          => 'capture'         ,
-                uncased      => 'case_insensitive',
-                non_case_sensitive
-                             => 'case_insensitive',
-                ci           => 'case_insensitive',
-                cased        => 'case_sensitive'  ,
-                cs           => 'case_sensitive'  ,
-                word_char    => 'word_ch'         ,
-                upper_case_letter
-                             => 'uc_letter'       ,
-                lower_case_letter
-                             => 'lc_letter'       ,
-                uppercase_letter
-                             => 'uc_letter'       ,
-                lowercase_letter
-                             => 'lc_letter'       ,
-                ws           => 'whitespace'      ,
-                eosx         => 'almost_end_of_string' ,
-                eos          => 'end_of_string'        ,
-                sol          => 'start_of_line'        ,
-                eol          => 'end_of_line'          ,
-                eopm         => 'end_of_previous_match',
-                look_behind  => 'preceding'            ,
-                lookbehind   => 'preceding'            ,
-                look_ahead   => 'followed_by'          ,
-                lookahead    => 'followed_by'          ,
-                negative_lookahead
-                             => 'not_followed_by'      ,
-                negative_lookbehind
-                             => 'not_preceding'        ,
-                qty          => 'quantity'             ,
-                );
-
-normalise_hash_contents(\%synonyms);
-
-
-my %kw;
-
-my @keyword_array = qw{ to
-                        or more
-                        character letter digit whitespace
-                        case_insensitive case_sensitive
-                        either or
-                        capture as  capture_as
-                        not
-                        minimal  possessive
-                        followed_by  followed by  preceding
-                        not_followed_by           not_preceding
-                        optional
-                        quantity
-                        };
-
-for my $k (@keyword_array) {
-    # For English, load keyword hash translating words to themselves
-    ## For French, for example, $kw{small} would need to contain 'petite', and
-    ## $synonyms{petit} would need to contain 'petite'. There would need to be
-    ## extra table loaders to manage this.
-    ## The names of the standard keywords would be translated, but not the names
-    ## of Unicode characters that are defined in all caps in the Unicode
-    ## standards.
-    $kw{$k} = $k;
-}
-# Add hyphenated variants for synonyms with underscores
-#if (0) {
-#for my $syns (keys %synonyms) {
-#    my $hyphenated = $syns;
-#    $hyphenated =~ s/ [_] //gx;
-#    if ($hyphenated ne $syns) {
-#        # A new variant on the synonym, with hyphens replacing underscores    
-#        $synonyms{$hyphenated} = $synonyms{$syns};
-#    }
-#}
-#}
-
-normalise_hash_contents(\%kw);
-
-my %is_plural_of = (letters     => 'letter',
-                    lcletters   => 'lcletter',
-                    ucletters   => 'ucletter',
-                    digits      => 'digit',
-                    characters  => 'character',
-                    whitespaces => 'whitespace',
-                    ## Should whitespace always be plural?
-                    ##   - It makes 'non-whitespace' confusing
-                    ##   - It is irregular
-                    ##   - Means that also need 'whitespace-character to be
-                    ##       able to get a single whitepace (or say 'one whitespace')
-                    ## whitespace  => 'whitespace',    
-                    ##whitespace_chs
-                    ##            => 'whitespace_ch',
-                    wss         => 'whitespace',
-                    ##whitespace_chs =>
-                    ##               'whitespace',
-                    ##whitespace_chars =>
-                    ##               'whitespace',
-                    wordchs    => 'wordch',
-                    wordchars  => 'wordch',
+    my $literal_type;               #    text: values are 'char' 'group'
+                                    #                 'seq' 'control' 'hex' 'octal'
+                                    #                 'matcher' (e.g. assertion)
+                                    #                 'backref'
+                                    #                 'range' (range token, such as 0-8)
+    
+    
+    my $literal_char_case;          # Set if char class letter
+    my $LLC_CAPITAL    = 'upper';   # Upper case letter
+    my $LLC_SMALL      = 'lower';   # Lower case letter
+    
+    my %digits = (zero => 0,
+                  one  => 1, two   => 2, three => 3, four => 4, five => 5,
+                  six  => 6, seven => 7, eight => 8, nine => 9);
+    
+    my %numbers = (ten      => 10, eleven   => 11, twelve  => 12, thirteen  => 13,
+                   fourteen => 14, fifteen  => 15, sixteen => 16, seventeen => 17,
+                   eighteen => 18, nineteen => 19);
+    
+    my %multiples_of_ten = (twenty => 20, thirty  => 30, forty  => 40, fifty  => 50,
+                            sixty  => 60, seventy => 70, eighty => 80, ninety => 90);
+    
+    # Normalised, anglicised, lower-cased keywords
+    # Converts synonyms to standard form
+    my %synonyms = (cased              => 'case_sensitive'       ,
+                    ch                 => 'character'            ,
+                    chs                => 'characters'           ,
+                    char               => 'character'            ,
+                    chars              => 'characters'           ,
+                    ci                 => 'case_insensitive'     ,
+                    cs                 => 'case_sensitive'       ,
+                    eosx               => 'almost_end_of_string' ,
+                    eos                => 'end_of_string'        ,
+                    eol                => 'end_of_line'          ,
+                    eopm               => 'end_of_previous_match',
+                    get                => 'capture'              ,
+                    look_behind        => 'preceding'            ,
+                    lookbehind         => 'preceding'            ,
+                    look_ahead         => 'followed_by'          ,
+                    lookahead          => 'followed_by'          ,
+                    lower_case_letter  => 'lc_letter'            ,
+                    lowercase_letter   => 'lc_letter'            ,
+                    negative_lookahead => 'not_followed_by'      ,
+                    negative_lookbehind=> 'not_preceding'        ,
+                    non_case_sensitive => 'case_insensitive'     ,
+                    opt                => 'optional'             ,
+                    optionally         => 'optional'             ,
+                    qty                => 'quantity'             ,
+                    sos                => 'start_of_string'      ,
+                    sol                => 'start_of_line'        ,
+                    thru               => 'to'                   ,
+                    through            => 'to'                   ,
+                    uncased            => 'case_insensitive'     ,
+                    uni                => 'full_unicode'         ,
+                    uppercase_letter   => 'uc_letter'            ,
+                    upper_case_letter  => 'uc_letter'            ,
+                    word_char          => 'word_ch'              ,
+                    ws                 => 'whitespace'           ,
                     );
-
-my %group_words = (letter     => 'noun',
-                   lc_letter  => 'noun',
-                   uc_letter  => 'noun',
-                   digit      => 'noun',
-                   whitespace => 'adj',
-                   word_ch    => 'noun',
-                   character  => 'noun',
-                   generic_newline => 'noun',
-                   );
-normalise_hash_keys(\%group_words);
-
-my %mode_words = (
-                  case_sensitive   => 'i-', # /-i
-                  case_insensitive => 'i+', # /i
-                  preserve         => 'p+', # /p
-                  legacy_unicode   => 'Ud', # /d
-                  full_unicode     => 'Uu', # /u
-                  ascii            => 'Ua', # /a
-                  locale_specific  => 'Ul', # /l
-                  );
-normalise_hash_keys(\%mode_words);
-
-my %zero_width_matchers = (
-                start_of_string => ['\\A'],
-                end_of_string   => ['\\z'],
-                almost_end_of_string
-                                => ['\\Z'],
-                start_of_line   => ['^', 'm'],   # Needs m-mode
-                end_of_line     => ['$', 'm'],   # Needs m-mode
-                word_boundary   => ['\\b', 'b'], # Can be negated
-                end_of_previous_match
-                                => ['\\G'],
-                           );
-
-normalise_hash_keys(\%zero_width_matchers);
-
-my $NON_WORD    = 'non';
-my $NON_LENGTH  = length($NON_WORD);
-
-## my %groups      = (digit => 'digit', letter => 'letter');
-
-my %char_names = (
-    minus     => '-' , dash           => '-',  hyphen       => '-',
-    dot       => '.' , period         => '.',  
-    slash     => '/' , forward_slash  => '/',  solidus      => '/',
-    star      => '*' , asterisk       => '*',  plus         => '+',
-    equals    => '=' , equal_sign     => '=',  equals_sign  => '=',
-    backslash => "\\", back_slash     => "\\", ampersand    => '&',
-    colon     => ':' , semi_colon     => ';' , semicolon    => ';' , 
-    ## whitespace_character =>  '\\s',
-    apostrophe           =>  "'",
-    sq                   =>  "'",
-    single_quote         =>  "'",
-    double_quote         =>  '"',
-    dq                   =>  '"',
-    #
-    tab       => "\t", newline        => "\n", new_line     => "\n",
-    space     => ' ',
-    #
-    backspace       => "\b",
-    alarm           => "\a",
-    escape          => "\e",    # the character x1B, not to be confused with backslash
-    form_feed       => "\f",
-    carriage_return => "\r",
-    no_break_space  => "\xA0",
-    soft_hyphen     => "\xAD",
-    line_feed       => '\x0A',  ## BUT MIGHT GET MANGLED BY NEWLINE HANDLING
-     );
-normalise_hash_keys(\%char_names);
-
-#while (my ($char_key, $char_value) = each %char_names ) {
-#    if ($char_key =~ / [-_] /x) {
-#        delete $char_names{$char_key};
-#        $char_key =~ s/ [-_] //gx;
-#        $char_names{$char_key} = $char_value;
-#    }
-#}
-
-
-my %irregular_plural = (equals => '');
-
-## Wrong for some words, e.g. lath -> lathes. Would have to examine more than
-## one trailing letter. May not matter if all of the character names are OK
-my %pluralisers = (h => 'es', s => 'es'); 
-
-
-
-
-# Initialise plurals hash
-while (my ($singular, $ch) = each %char_names ) {
-    # Derive the plural by using standard English rules, but with
-    # an exception list
-    ## print "singular: $singular ch: $ch\n";
-    if (exists $irregular_plural{$singular}) {
-        # Irregular plural value is null string if there is no plural
-        $is_plural_of{$irregular_plural{$singular}} = $singular if $irregular_plural{$singular};
-    } else {
-        my $last_ch =  substr($singular, -1, 1);
-        my $plural = $singular . ($pluralisers{$last_ch} || 's');
-        $is_plural_of{$plural} = $singular;
+    
+    normalise_hash_contents(\%synonyms);
+    
+    
+    my %kw;
+    
+    my @keyword_array = qw{ to
+                            or more
+                            character letter digit whitespace
+                            case_insensitive case_sensitive
+                            either or
+                            capture as  capture_as
+                            not
+                            minimal  possessive
+                            followed_by  followed by  preceding
+                            not_followed_by           not_preceding
+                            optional
+                            quantity
+                            then
+                            };
+    
+    for my $k (@keyword_array) {
+        # For English, load keyword hash translating words to themselves
+        ## For French, for example, $kw{small} would need to contain 'petite', and
+        ## $synonyms{petit} would need to contain 'petite'. There would need to be
+        ## extra table loaders to manage this.
+        ## The names of the standard keywords would be translated, but not the names
+        ## of Unicode characters that are defined in all caps in the Unicode
+        ## standards.
+        $kw{$k} = $k;
     }
-}
+    # Add hyphenated variants for synonyms with underscores
+    #if (0) {
+    #for my $syns (keys %synonyms) {
+    #    my $hyphenated = $syns;
+    #    $hyphenated =~ s/ [_] //gx;
+    #    if ($hyphenated ne $syns) {
+    #        # A new variant on the synonym, with hyphens replacing underscores    
+    #        $synonyms{$hyphenated} = $synonyms{$syns};
+    #    }
+    #}
+    #}
+    
+    normalise_hash_contents(\%kw);
+    
+    my %is_plural_of = (letters     => 'letter',
+                        lcletters   => 'lcletter',
+                        ucletters   => 'ucletter',
+                        digits      => 'digit',
+                        characters  => 'character',
+                        whitespaces => 'whitespace',
+                        ## Should whitespace always be plural?
+                        ## Decision: No
+                        ##   - It makes 'non-whitespace' confusing
+                        ##   - It is irregular
+                        ##   - Means that also need 'whitespace-character' to be
+                        ##       able to get a single whitepace (or say 'one whitespace')
+                        wss         => 'whitespace',
+                        wordchs     => 'wordch',
+                        wordchars   => 'wordch',
+                        );
+    
+    my %group_words = (letter     => 'noun',
+                       lc_letter  => 'noun',
+                       uc_letter  => 'noun',
+                       digit      => 'noun',
+                       whitespace => 'adj',
+                       word_ch    => 'noun',
+                       character  => 'noun',
+                       generic_newline => 'noun',
+                       );
+    normalise_hash_keys(\%group_words);
+    
+    my %mode_words = (
+                      case_sensitive   => 'i-', # /-i
+                      case_insensitive => 'i+', # /i
+                      preserve         => 'p+', # /p
+                      legacy_unicode   => 'Ud', # /d
+                      full_unicode     => 'Uu', # /u
+                      ascii            => 'Ua', # /a
+                      locale_specific  => 'Ul', # /l
+                      space_means_ws   => 'S1', # space within string means whitespace mode
+                      space_means_wss  => 'S+', # space within string means whitespaces mode
+                      space_means_space=> 'S-', # space within string means space mode
+                      );
+    normalise_hash_keys(\%mode_words);
+    
+    my %zero_width_matchers = (
+                    start_of_string => ['\\A'],
+                    end_of_string   => ['\\z'],
+                    almost_end_of_string
+                                    => ['\\Z'],
+                    start_of_line   => ['^', 'm'],   # Needs m-mode
+                    end_of_line     => ['$', 'm'],   # Needs m-mode
+                    word_boundary   => ['\\b', 'b'], # Can be negated
+                    end_of_previous_match
+                                    => ['\\G'],
+                               );
+    
+    normalise_hash_keys(\%zero_width_matchers);
+    
+    my $NON_WORD    = 'non';
+    my $NON_LENGTH  = length($NON_WORD);
+    
+    ## my %groups      = (digit => 'digit', letter => 'letter');
+    
+    my %char_names = (
+        alarm   => "\a",
+        ampersand       => '&',
+        apostrophe      =>  "'",
+        asterisk        => '*',
+        at              => '@',
+        at_sign         => '@',
+        back_slash      => "\\", 
+        backslash       => "\\", 
+        backspace       => "\b",
+        backtick        => '`',
+        caret           => '^',
+        carriage_return => "\r",
+        close_brace     => '}',
+        close_bracket   => ']',
+        close_parenthesis=> ')',
+        colon           => ':' ,
+        comma           => ',',
+        dash            => '-', 
+        dot             => '.' ,
+        dollar          => '$',
+        dollar_sign     => '$',
+        double_quote    =>  '"',
+        dq              =>  '"',
+        equal_sign      => '=',
+        equals          => '=' ,
+        equals_sign     => '=',
+        escape          => "\e",    # the character x1B, not to be confused with backslash
+        exclamation     => '!',
+        exclamation_mark=> '!',
+        form_feed       => "\f",
+        forward_slash   => '/',
+        hash            => '#',
+        hat             => '^',
+        hyphen          => '-',
+        line_feed       => '\x0A',
+        left_brace      => '{',
+        left_bracket    => '[',
+        left_parenthesis=> '(',
+        minus           => '-' , 
+        newline         => '\n', 
+        no_break_space  => '\xA0',
+        open_brace      => '{',
+        open_bracket    => '[',
+        open_parenthesis=> '(',        
+        percent         => '%',
+        percent_sign    => '%',
+        period          => '.',
+        pipe            => '|',
+        plus            => '+',
+        question_mark   => '?',
+        right_brace     => '}',
+        right_bracket   => ']',
+        right_parenthesis=>')',
+        semi_colon      => ';', 
+        single_quote    => "'",
+        slash           => '/', 
+        soft_hyphen     => '\xAD',
+        solidus         => '/',
+        space           => ' ',
+        sq              => "'",
+        star            => '*', 
+        tab             => '\t',
+        tilde           => '~',
+        underscore      => '_',
+         );
+    normalise_hash_keys(\%char_names);
+    
+    #while (my ($char_key, $char_value) = each %char_names ) {
+    #    if ($char_key =~ / [-_] /x) {
+    #        delete $char_names{$char_key};
+    #        $char_key =~ s/ [-_] //gx;
+    #        $char_names{$char_key} = $char_value;
+    #    }
+    #}
+    
+    
+    my %irregular_plural = (
+                            # singular  =>  irregular_plural, or null if no plural
+                            equals => '',
+                            leftparenthesis  => 'leftparentheses',
+                            openparenthesis  => 'openparentheses',
+                            rightparenthesis => 'rightparentheses',
+                            closeparenthesis => 'closeparentheses',
+                            );
+    
+    ## Wrong for some words, e.g. lath -> lathes. Would have to examine more than
+    ## one trailing letter. May not matter if all of the character names are OK
+    my %pluralisers = (h => 'es', s => 'es'); 
+    
+    
+    
+    
+    # Initialise plurals hash
+    while (my ($singular, $ch) = each %char_names ) {
+        # Derive the plural by using standard English rules, but with
+        # an exception list
+        ## print "singular: $singular ch: $ch\n";
+        if (exists $irregular_plural{$singular}) {
+            # Irregular plural value is null string if there is no plural
+            $is_plural_of{$irregular_plural{$singular}} = $singular if $irregular_plural{$singular};
+        } else {
+            my $last_ch =  substr($singular, -1, 1);
+            my $plural = $singular . ($pluralisers{$last_ch} || 's');
+            $is_plural_of{$plural} = $singular;
+        }
+    }
 
-my $pause = 1;
-
-
-sub say {
-    my ($a) = @_;
-    print "$a\n";
-}
 
 {
     # State data for wre, done this way for compatibility with Perl versions
@@ -461,7 +560,10 @@ sub say {
     my $memo_size           = 0;    # Total bytes in memo, keys + content
     my $memo_max_chars      = 10_000_000;   # Arbitrary limit    
     
-    
+    sub token_type {
+        # Accessor for token_type
+        return $token_type;
+    }
     sub wre_to_terse {
         
         #   wre_to_terse()
@@ -673,7 +775,12 @@ sub say {
             # Convert the wre to a qr regex literal
             my $terse = _wre_to_tre($wre);
             
-            $qr = qr/$terse/x;
+            eval {$qr = qr/$terse/x};
+            
+            if ($@) {
+                croak "Invalid regex generated: $@";
+            }
+            
             if ($memo_size < $memo_max_chars) {
                 $memo_of_qrs{$wre} = $qr;   # Memoise the qr regex
                 $memo_count++;
@@ -723,9 +830,10 @@ sub new {
     
     my $self = { };
     
-    say 'in wre';    
+    ## say ('in wre');    
 
-    $self->{'terse'} = qr/[cat]/;
+    my $terse = _wre_to_tre($wre);
+    $self->{'terse'} = $terse;
     $self->{'ire'} = $wre;
     
     bless ($self, $class);
@@ -794,12 +902,15 @@ sub flag_value {
     
 }
 
-
+    sub reset_line_flags {
+        $line_has = 0;
+    }
 
     sub give_line_to_tokeniser {
         ($line) = @_;
         ## $line = _trim_trailing($line);
         pos($line) = 0;
+        $token_pos = 0;
         $line_has  = 0;     # Bit mask of what has been seen on this line
 
     }
@@ -812,6 +923,7 @@ sub flag_value {
         #   
         ($prev_prev_token, $prev_token) = ($prev_token, $token);
        
+        $token_start_pos = pos($line);
         $token_raw = undef;
         
         $word_is_plural  = 0;
@@ -1003,7 +1115,7 @@ sub flag_value {
                         $token_flags  = $flags;
                     } elsif (  my ($control_letter) = $word_converted
                            =~ / \A (?: control | ctrl | cntrl | ctl )
-                                [-_]
+                                # hyphens & underscores deleted  [-_]
                                 ( [a-zA-Z] )
                                 \z /x) {
                         # control-<letter>
@@ -1034,6 +1146,15 @@ sub flag_value {
             # saved it in $token_raw, otherwise copy it to the raw version
             $token_raw = $token;
         }
+        $token_pos = pos($line);
+    }
+    
+    sub token_pos {
+        return $token_pos;
+    }
+    
+    sub token_start_pos {
+        return $token_start_pos;
     }
     
     sub token_is_kw {
@@ -1054,21 +1175,31 @@ sub flag_value {
         #   (1) A reference to the structure for the complete line
         #   (2) The chunk number within the line
         # Returns:
+        #   negative when the keyword 'then' is found
         #   zero when it finds no more chunks available from this line
         #   True otherwise: 1 if no errors that might be literals, > 1 otherwise
         # Side Effects:
         #   Adds the details of the chunk to the structure referenced by $pl_ref
         #
-        # Assumes gnt previously called
-        # Calls gnt to work its way through a single chunk
-        # Gets the first token of the next chunk
+        # Assumes gnt() previously called, leaving the first token available
+        # Calls gnt() to work its way through a single chunk
+        # Exits after finding the first token of the next chunk
         
         my ($pl_ref, $chunk_number) = @_;
 
         my $ambiguity_seen = 0;
-            
+        
+        if (! defined $token_type) {
+            my $pause = 1;
+        }
         if      ($token_type eq $TT_NO_MORE) {
+            # gnt() reported end of line
             return 0;
+        } elsif ($token_type eq $TT_WORD && $token eq $kw{then} ) {
+            # gnt() found the keyword 'then'
+           
+            return -1;
+            
         } elsif ($token_type eq $TT_NUMBER
                  || $token_type eq $TT_WORD && $token eq $kw{quantity} ) {
             # A number specified as a word (e.g. one, or twenty-seven), or the
@@ -1168,7 +1299,7 @@ sub flag_value {
             }
             if ($word_is_plural
                 && ($line_has & $LINE_HAS_QUANTIFIER)
-                && $pl_ref->{max} == 1) {
+                && $pl_ref->{max} eq '1') {
                 _error("Plural not allowed when max quantity is one: $token_raw");
             }
 
@@ -1413,6 +1544,17 @@ sub flag_value {
     }
 }
 
+## These very crude error etc. handling routines are leftover from before this
+## was a module. It needs refactoring:
+##   - error (and other) text stored in the Wre object. 
+##   - croak on error detected during non-oo call. Wrap call in eval if you
+##     really need to handle errors
+##   - default to croak() on error, as that implies the regex isn't really safe
+##     to use, so it shouldn't just be left to execute whatever the erroneous
+##     regex produces
+##   - option to prevent croaking on error, e.g. when being called by a utility
+##     that accepts a wordy as input and displays the result
+
 sub _observation {
     my ($text) = @_;
     _output("Note: $text\n");
@@ -1633,7 +1775,8 @@ sub _generate_regex {
     # Copy ancestral information
 
     $combined_ref->{case_insensitive} = $ancestral_ref->{case_insensitive};
-    $combined_ref->{unicode}          = $ancestral_ref->{unicode} || '';
+    $combined_ref->{unicode}          = $ancestral_ref->{unicode}      || '';
+    $combined_ref->{space_means}      = $ancestral_ref->{space_means}  || '';
     # Walk the modes entries (if any) in this node.
     # Compare requested mode with previous mode: if it differs, add an entry to
     # the mode string and set $has_mode to true
@@ -1663,6 +1806,9 @@ sub _generate_regex {
                 $mode_string_on = $mode_action;
                 $combined_ref->{unicode} = $mode_action;
             }
+        } elsif ($mode_letter eq 'S') {
+            # space-means-?  ws/wss/space  1/+/-
+            $combined_ref->{space_means} = $mode_action;
         } else {
             _error ("Internal error: mode_letter = $mode_letter");
         }
@@ -1836,7 +1982,11 @@ sub _generate_regex {
                 #my @encoded = map { _char_non_class_encode($_) } @string_chars;
                 my $encoded_val = '';
                 for my $sch (@string_chars) {
-                    $encoded_val .= _char_non_class_encode($sch, $xsp ? ' ' : '[ ]');
+                    my $encoding_for_space
+                        = $combined_ref->{space_means} eq '+' ? '\\s+' :
+                          $combined_ref->{space_means} eq '1' ? '\\s'  : 
+                                                          $xsp ? ' '    : '[ ]';
+                    $encoded_val .= _char_non_class_encode($sch, $encoding_for_space);
                 }
                 if ($strings) {
                     # Not first string
@@ -1961,15 +2111,11 @@ sub _generate_regex {
             
             for my $s_p ($SINGULAR, $PLURAL) {
                 if ($chars_present[$s_p]) {
-                    if ($char_control[$s_p] == 1
-                        
-                        ## &&  length($chars[$s_p]) < 4  # Hack for A-Za-z
-                        ) {
+                    if ($char_control[$s_p] == 1) {
                         $re .= $single_char[$s_p] . ($s_p ? '+' : '');
                     } else {
                         my $char_class = '[';
                         $char_class .= '^' if $overall_negated;
-                        ##$chars = "\\^" if $chars eq '^';   # Caret all alone needs backslash
                         $char_class .= $leading_dash[$s_p] . $chars[$s_p] . ']';
                         $re .= $char_class . ($s_p ? '+' : '');
                     }
@@ -1977,17 +2123,14 @@ sub _generate_regex {
                         $re .= $xsp . '|' . $xsp;
                     }
                 }
-                
             }
         }
         $re .= $xsp . ')' if $parens_needed;
     }
 
-
     if ($embed_source_regex) {
         $re .= $MAGIC_MARKER . '(' . 2 . ')' . ($node_ref->{a_raw_line} || '') . "\n";
     }
-    
     # Node might have children - append their sub-regexes
     if ($child_count) {
         my $assembled = '';
@@ -1999,7 +2142,6 @@ sub _generate_regex {
             debug ("assembled: $assembled");
         }
         $re .= $assembled;
-        
     }
 
     # Decide content group code.
@@ -2048,10 +2190,6 @@ sub _generate_regex {
             # What we need to know is whether any embedded non-escaped ) matches
             # with the initial (.
             
-            
-            ## ?? What about ( or ) within character classes?
-            ## ?? They aren't escaped
-            
             my $wk_re = $re;    # Copy partial regex as we are going to do
                                 # destructive testing
 
@@ -2059,7 +2197,9 @@ sub _generate_regex {
             $wk_re =~ s/ \\ [()]    //gx;   # Get rid of any escaped ( or )
             $wk_re =~ s/   [^()]    //gx;   # Get rid of anything except ( or )
             $wk_re =~ s/ \A [(]     //x;       # Remove first (
-            $wk_re =~ s/     [)] \z //x;    # Remove last )            
+            $wk_re =~ s/     [)] \z //x;    # Remove last )
+            $wk_re =~ s/ \[ [^\]]+ \]    //gx; # Remove any character classes
+                         
             while ($wk_re =~ //x) {
                 $wk_re =~ s/ [(] [)] //gx;  # Remove paired ()
             }
@@ -2416,8 +2556,8 @@ sub _char_encode {
                  "\r" => "\\r",
                  "\t" => "\\t",
                  );
-    return '\x0a' if $ch eq '\x0A';  # Hack for line-feed
-    return "<bad char>" unless length $ch == 1;
+    ## return '\x0a' if $ch eq '\x0A';  # Hack for line-feed
+    return $ch unless length $ch == 1;
     return $basic{$ch} if $basic{$ch};
     my $ord = ord($ch);
     my $hex = sprintf('%2x', $ord);
@@ -2479,11 +2619,11 @@ sub _split_regex {
     
     my $no_terminal_newline = (substr($regex_text, -1, 1) ne "\n");
     
-    for my $line (@lines) {
+    for my $in_line (@lines) {
         my ($gened, $param, $rest, $orig);
         my $orig_comment = '';
         my $out_line = '';    
-        if (($gened, $param, $rest) = $line =~ /
+        if (($gened, $param, $rest) = $in_line =~ /
             (.*)              # capture zero or more any-char
             \Q$MAGIC_MARKER\E # '#MAGIC^MARKER#'
             [(]               # (
@@ -2528,7 +2668,7 @@ sub _split_regex {
         } else {
             # No original regex - just gened
             $out_line .= ' ' x $indent_level;
-            $out_line .= $line;
+            $out_line .= $in_line;
         }
         $out_text .= $out_line . "\n";
     }
@@ -2692,7 +2832,7 @@ sub _wre_to_tre {
     
     my ($regex, $overall_modes) = _generate_regex($root_node);
 
-    if ($overall_modes) {
+    if ($overall_modes || $wrap_output) {
         my $mode_text = '';
         
         $mode_text .= 'p' if  $overall_modes & $REQUIRE_P_MODE;
@@ -2736,11 +2876,23 @@ sub process_line {
     
     my $or_required = 0;
     my $or_allowed  = 0;
+    my $has_or;
+    my $has_either;
+    
     my $expecting_children = 0;
     my $elder_sibling_ref = undef;  # The child before me
-    do {
+    my $chunker_found_then = 0;
+
+    my $start_pos = 0;
+    
+    LINE_OR_THEN:
+    while ($pl_indent >= 0 &&
+               $pl_indent >= $starting_indent) {
+    ## do {
         # Process the current line, and any line at the same level.
         # Nested lines (children) are handled by recursive calls.
+        # Each iteration of this do loop handles a complete line, except that
+        # the keyword 'then' causes a pseudo line end.
         
         # Either/or is handled partly at this level, as it does not follow the
         # standard indented block structure: the end of an either/or sequence is
@@ -2750,25 +2902,72 @@ sub process_line {
         # Add new_child to parent
         my $child_ref = {}; # New child is empty hash
         push @{$parent_ref->{z_children}}, $child_ref;
-        $child_ref->{a_raw_line} = ' ' x $pl_indent . $pl_line;
+        ##$child_ref->{a_raw_line} = ' ' x $pl_indent . $pl_line;
+            
 
-        give_line_to_tokeniser($pl_line);
-        gnt();  # get first token of current line
-        ## Base either/or on the first token. If this isn't sufficient (e.g. for
-        ## languages where the first token isn't definitive), then change this
-        ## to special-case the first parse_chunk.
-        my $has_or     = token_is_kw('or'    );
-        my $has_either = token_is_kw('either');
+            
+        if (not $chunker_found_then) {
+            give_line_to_tokeniser($pl_line);
+            gnt();  # get first token of current line
+            ## Base either/or on the first token. If this isn't sufficient (e.g. for
+            ## languages where the first token isn't definitive), then change this
+            ## to special-case the first parse_chunk.
+            $has_or     = token_is_kw('or'    );
+            $has_either = token_is_kw('either');
+        }
+
         
-        my $chunk_number = 1;
+        my $chunk_number = 0;
         my $chunk_result;
         my $chunk_error_count = 0;
-        while (($chunk_result = parse_chunk($child_ref, $chunk_number)) && $chunk_number++ < 2000 ) {
+
+        
+        # Parse all the chunks in a complete line, except stop at 'then'
+
+        while ( $chunk_number++ < 2000 && (($chunk_result = parse_chunk($child_ref, $chunk_number)) > 0 ) ) {
             $chunk_error_count++ if $chunk_result > 1;
         }
         if ($chunk_number >= 2000) {
             _output("Internal Error: runaway chunker: $pl_line\n");
+            return ($pl_line, -1, '');
         }
+        my $end_pos = token_pos();
+        
+        $child_ref->{a_raw_line} = 
+            ' ' x ($pl_indent + $start_pos) . substr($pl_line, $start_pos, $end_pos - $start_pos);
+        
+        if ($chunk_result < 0) {
+            # 'then' found, so end of sub-line
+            $chunker_found_then = 1;
+
+            reset_line_flags();
+            
+            ## Checks here:
+            ##  Allow 'then' as first word on line: $chunk_number == 1 && $start_pos == 0
+            ##  Otherwise
+            ##     error if 'then' was last token on line: $token_type eq $TT_NO_MORE or $TT_COMMENT
+            ##     error if no matchers in partial line preceding 'then'
+            
+            if ($chunk_number == 1 && token_start_pos() == 0) {
+                # 'then' at start of complete line is OK
+                gnt();  # Skip the 'then' so the next token is available as expected
+            } else {
+                gnt();  # Skip the 'then' so the next token is available as expected
+                if (token_type() eq $TT_NO_MORE || token_type() eq $TT_COMMENT) {
+                    # 'then' was last non-comment token on line
+                    _error("'then' should not end a line");
+                } elsif (defined $child_ref->{literal}) {
+                    # OK, previous sub-line had some matcher(s)
+                } else {
+                    _error("No matcher found before 'then'");
+                }
+            }
+            
+            next LINE_OR_THEN;  # ----------->>>>>>>>>>>>
+        } else {
+            $chunker_found_then = 0;
+        }
+
         if (  $or_required && ! $has_or) {
             _output("Error - missing or: $pl_line\n");
             
@@ -2805,6 +3004,7 @@ sub process_line {
         $or_allowed         = $has_either || $has_or;
 
         ($pl_line, $pl_indent, $pl_comment_lines) = read_line();
+        $start_pos = 0;
         
         if ($expecting_children) {
             # Did not see any literals on previous line
@@ -2840,8 +3040,7 @@ sub process_line {
             }
         }
         $elder_sibling_ref = $child_ref;
-    }   while ($pl_indent >= 0 &&
-               $pl_indent >= $starting_indent);
+    }   
     return ($pl_line, $pl_indent, $pl_comment_lines);
 }
 #---------------------------------------
@@ -2871,7 +3070,7 @@ sub slurp_file {
 #---------------------------------------
 #---------------------------------------
 {
-    # Variables for use by read_line, unread_line, load_ire_lines
+    # Variables for use by read_line, load_ire_lines
     my @ire_lines;
     
     sub load_ire_lines {
@@ -2937,19 +3136,7 @@ sub normalise_hash_contents {
 
 #---------------------------------------
 #
-#  Module
-#   convert_ire_to_terse is passed a complete string
-#   convert_ire_to_terse:
-#       splits passed wre string into array of lines used by read_line
-#       calls
 
-#   read_line pops one line at a time
-#   unread_line pushes a line with unchanged indentation
-#   file converter just slurps a file and passes contents to convert_ire_to_terse
-#
-#   unread_line is used to handle 'then': sub-lines starting with the keyword 'then'
-#    are treated as separate lines, each aligned with the first character of the
-#    overall line
 
 
 main_line() unless caller();
@@ -2962,6 +3149,12 @@ sub debug {
     my ($text) = @_;
     _output("$text\n") if $DEBUG > 0;
 }
+
+sub say {
+    my ($a) = @_;
+    print "$a\n";
+}
+
 =format
 
 To Do:
@@ -2970,7 +3163,10 @@ To Do:
         
         - Ordering capture->optional->numeric quantifiers.
           If not in this order, no error is reported but the regex generated is
-          unlikely to be what the user wanted.
+          unlikely to be what the user wanted. E.g.
+            three optional x  # Expecting zero to three occurences of x
+                              #  but is treated as if it was:
+            optional three x  # zero or exactly three occurences of x
         
         - Group 'character' mixed with other groups generates incorrect regex.
           One reasonable fix is to disallow the mixture: 'any character' with
@@ -2984,11 +3180,21 @@ To Do:
           
     Required for quality control
     
-        Automated test harness
+        Improvements to automated test harness:
+            - checking of error handling
+            - exact error text vs. some error text vs. no error reported
+            - lots more tests in wordy-to-terse direction
+            
+            for wordy-to-terse:
+                wordy-in / terse-expected
+            for terse-to-wordy:
+                terse-in / wordy-expected
+            
+            
     
     Required for Usefulness
     
-        Architectural change to be a module, supporting utilities that allow
+        Improved module interface, supporting utilities that allow
         wres to be passed in via a file, embedded in source, or directly from
         a user e.g. using a web browser.
         
@@ -3005,7 +3211,8 @@ To Do:
             could be intended to be the range a-g rather than the three
             characters 'a', hyphen and 'g'. Probably best not to support it:
             could create an observation if it is seen, or have a rule that
-            unquoted solo hyphens are not allowed between other literals.
+            unquoted solo hyphens are not allowed between a pair of naked
+            letters or a pair of naked digits.
         
         Interpolation:
 
@@ -3151,7 +3358,16 @@ To Do:
             Any line with a 'then' is not allowed anything indented from it:
             there should be at least one matcher before the 'then'.
                     
-            
+            Handling:
+                First 'then':
+                    Check that some matcher(s) seen (error if not)
+                    
+                    Set 'then-seen'
+                    Start building second child (for matchers following the
+                      first 'then' to go into)
+                Subsequent 'then':
+                    Start building another child (for matchers following this
+                      'then' to go into)
                 
         White space:
             Tie down definition, check implementation
@@ -4070,7 +4286,14 @@ sub sample_b {
 #   in /x mode and includes the original regex.
 #
 #   The generation process will be done only once, courtesy of the state
-#   initialiser.
+#   initialiser. ????? Not true! The value would be saved between invocations
+#   of the sub containing the state variable, but if the assignment is
+#   unconditional then the call to wre() might be executed every time. ??
+#When combined with variable declaration, simple scalar assignment to state
+#variables (as in state $x = 42) is executed only the first time. When such
+#statements are evaluated subsequent times, the assignment is ignored.
+# It's not clear whether assigning the result of a unction counts as 'simple
+# scalar assignment', e.g. does it have to be a simple scalar on both sides?
 
 =for Perl 5.10+
     my $data_2 = "13:53:31 pm";
