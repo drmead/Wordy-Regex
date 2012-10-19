@@ -1,6 +1,6 @@
 use strict;
 use warnings;
-use 5.014;
+use 5.008;
 use YAML::XS;
 use Test::More;
 use lib "../yaml_schema";
@@ -88,6 +88,7 @@ groups:
           wordy:
           terse:
           terse-options: /[-gcimsoxdual]*/
+          embed-original: boolean default false
           # Unidirectional tests
           wordy-to-terse:  boolean   # Must have wordy supplied if true
           terse-to-wordy:  boolean   # Must have terse supplied if true
@@ -120,7 +121,7 @@ groups:
     # Tests can be grouped as desired: there are some options that will default
     # through into each test in the group
     #
-    - group-name: Examples terse-to-wordy A
+    - group-name: ExamplesA
       terse-to-wordy: true
       tests:
                         
@@ -412,7 +413,7 @@ groups:
                 no_break_space 
                 soft_hyphen    
           terse: |
-                \x0a\t\n\n[ ]\x08\a\e\f\r\xa0\xad
+                \x0A\t\n\n[ ]\x08\a\e\f\r\xA0\xAD
           matches:
             -   match: true
                 data: "\x0a\t\n\n \x08\a\e\f\r\xa0\xad"
@@ -1281,7 +1282,13 @@ groups:
           terse-options: -x
           wordy: |
               range control-A to control-Q space
-              
+        - name: TODO Test 45A - range out of order
+          terse: |
+              [\cq-\ca ]
+          terse-options: -x
+          wordy: |
+              range control-Q to control-A space
+                    
         - name: Test 46
           terse: |
               [a\-g]*
@@ -2766,10 +2773,232 @@ groups:
               or
                   capture as sql_type
                       one or more  non-whitespace
+    
+    
+    ##############
 
+    - group-name: charnames
+      wordy-to-terse: true
+      tests:
+        - name: Charnames 1
+          terse-options: -x
+          embed-original: true        
+          terse: |
+              \s*[\s\d]*[(][)](?:\s+)?[(]+\}(?:aa|[},]|[(]+)
+          wordy: |
+                zero or more whitespaces
+                zero or more whitespaces digits
+                left-parenthesis
+                right-parenthesis
+                opt wss
+                left-parentheses
+                close-brace
+                left-parentheses or close-brace or 'aa' or comma
+    - group-name: space-means-wss
+      wordy-to-terse: true
+      tests:
+        - name: space-means-wss 1
+          terse-options: -x
+          embed-original: true        
+          terse: |
+              [ #][ ]longer\s+quoted\s+string[ #][ ]longer\squoted\sstringa[ ]quoted[ ]string
+          wordy: |
+                space-means-wss
+                     ' ' hash
+                     ' '
+                     'longer quoted string'
+                space-means-ws
+                     ' ' hash
+                     ' '
+                     'longer quoted string'
+                     space-means-space
+                        'a quoted string'
+    ##########
+
+    - group-name: very-long
+      wordy-to-terse: true
+      tests:
+        - name: Richards monster without space-means-wss
+          terse: >
+            \A--\sappl[ ]=[ ](?<application>(?:\S+)?)[ ]host[ ]=\s(?<host>(?:\S+)?)[
+            ]user[ ]=[ ](?<user>(?:\S+)?)\/[ ]pid[ ]=[ ](?<pid>\d+)[ ]elapsed[ ]=[
+            ](?<elapsed>\d+[.]\d+)[ ]seconds[ ]rows[ ]=[ ](?<rows>\d+)[ ]tran[ ]=[
+            ](?<tran>\d+)[ ]server[ ]=[ ](?<server>\S+)[ ]database[ ]=[ ](?<database>(?:\S+)?)[
+            ]client[ ]=[ ](?<client_IP>\d+[.](?:[.]|\d+)\d+[.]\d+)\/\d+\s+(?<operation>\w+)\s+\w{3}\s+\w{3}\s+\d+\s+(?<start-time>\d+:\d+(?::|\d+)[.]\d+)\s+\d+\s+-\s+\w{3}\s+(?<end-month>\w{3})\s+(?<end-day>\d+)\s+(?<end-time>\d+:\d+(?::|\d+)(?:[.]|\d+))\s+(?<end-year>\d+)\s+(?:[^\n]+)?send[
+            ][ ]=[ ](?<send-time>\d+[.]\d+)[ ]sec[ ]receive[ ]=[ ]\d+[.]\d+[ ]sec[
+            ]send_packets[ ]=[ ](?<send-pkts>\d+)[ ]receive_packets[ ]=[ ](?<rcv_pkts>\d+)[
+            ]bytes_received[ ]=[ ](?<bytes-rcv>(?:-+)?\d+)[ ]errors[ ]=[ ](?<errors>\d+)\s+(?:(?<sid-text>sid)[
+            ]=[ ](?<sid-num>\d+)|(?<sql-type>\S+))
+          
+          wordy: |
+            space-means-space
+                sos then '--' then ws 
+                'appl = '              then as application opt non-wss
+                ' host =' then ws      then as host        opt non-wss
+                ' user = '             then as user        opt non-wss
+                '/ pid = '             then as pid         digits
+                ' elapsed = '          then as elapsed
+                                                           digits then . then digits
+                ' seconds rows = '     then as rows        digits
+                ' tran = '             then as tran        digits 
+                ' server = '           then as server      non-wss 
+                ' database = '         then as database    opt non-wss
+                ' client = '           then as client_IP 
+                                                           digits then . then digits . then digits  then . then digits 
+                / then digits then wss
+                then                        as operation   word-chars 
+                wss then three word-chars then wss then three word-chars then wss then digits then wss
+                then                        as start-time                            
+                                                           digits then : then digits then : digits then . then digits 
+                wss then digits then wss then hyphen then wss then three word-chars then wss
+                then                        as end-month   three word-chars   then wss
+                then                        as end-day     digits             then wss
+                then                        as end-time
+                                                           digits then : then digits then : digits then . digits
+                wss                    then as end-year    digits             then wss then opt non-newlines
+                'send  = '             then as send-time
+                                                           digits then . then digits 
+                ' sec receive = ' then                     digits then . then digits 
+                ' sec send_packets = ' then as send-pkts   digits 
+                ' receive_packets = '  then as rcv_pkts    digits
+                ' bytes_received = '   then as bytes-rcv 
+                                                           opt hyphens then digits
+                ' errors = '           then as errors      digits               then wss
+                either 
+                                            as sid-text    'sid' 
+                                            ' = '
+                                            as sid-num     digits 
+                or 
+                                            as sql-type    non-wss 
+            
+        - name: Richards monster with space-means-wss
+          terse: >
+            \A--\sappl\s+=\s+(?<application>(?:\S+)?)\s+host\s+=\s(?<host>(?:\S+)?)\s+user\s+=\s+(?<user>(?:\S+)?)\/\s+pid\s+=\s+(?<pid>\d+)\s+elapsed\s+=\s+(?<elapsed>\d+[.]\d+)\s+seconds\s+rows\s+=\s+(?<rows>\d+)\s+tran\s+=\s+(?<tran>\d+)\s+server\s+=\s+(?<server>\S+)\s+database\s+=\s+(?<database>(?:\S+)?)\s+client\s+=\s+(?<client_IP>\d+[.](?:[.]|\d+)\d+[.]\d+)\/\d+\s+(?<operation>\w+)\s+\w{3}\s+\w{3}\s+\d+\s+(?<start-time>\d+:\d+(?::|\d+)[.]\d+)\s+\d+\s+-\s+\w{3}\s+(?<end-month>\w{3})\s+(?<end-day>\d+)\s+(?<end-time>\d+:\d+(?::|\d+)(?:[.]|\d+))\s+(?<end-year>\d+)\s+(?:[^\n]+)?send\s+\s+=\s+(?<send-time>\d+[.]\d+)\s+sec\s+receive\s+=\s+\d+[.]\d+\s+sec\s+send_packets\s+=\s+(?<send-pkts>\d+)\s+receive_packets\s+=\s+(?<rcv_pkts>\d+)\s+bytes_received\s+=\s+(?<bytes-rcv>(?:-+)?\d+)\s+errors\s+=\s+(?<errors>\d+)\s+(?:(?<sid-text>sid)\s+=\s+(?<sid-num>\d+)|(?<sql-type>\S+))
+          
+          wordy: |
+            space-means-wss
+                sos then '--' then ws 
+                'appl = '              then as application opt non-wss
+                ' host =' then ws      then as host        opt non-wss
+                ' user = '             then as user        opt non-wss
+                '/ pid = '             then as pid         digits
+                ' elapsed = '          then as elapsed
+                                                           digits then . then digits
+                ' seconds rows = '     then as rows        digits
+                ' tran = '             then as tran        digits 
+                ' server = '           then as server      non-wss 
+                ' database = '         then as database    opt non-wss
+                ' client = '           then as client_IP 
+                                                           digits then . then digits . then digits  then . then digits 
+                / then digits then wss
+                then                        as operation   word-chars 
+                wss then three word-chars then wss then three word-chars then wss then digits then wss
+                then                        as start-time                            
+                                                           digits then : then digits then : digits then . then digits 
+                wss then digits then wss then hyphen then wss then three word-chars then wss
+                then                        as end-month   three word-chars   then wss
+                then                        as end-day     digits             then wss
+                then                        as end-time
+                                                           digits then : then digits then : digits then . digits
+                wss                    then as end-year    digits             then wss then opt non-newlines
+                'send  = '             then as send-time
+                                                           digits then . then digits 
+                ' sec receive = ' then                     digits then . then digits 
+                ' sec send_packets = ' then as send-pkts   digits 
+                ' receive_packets = '  then as rcv_pkts    digits
+                ' bytes_received = '   then as bytes-rcv 
+                                                           opt hyphens then digits
+                ' errors = '           then as errors      digits               then wss
+                either 
+                                            as sid-text    'sid' 
+                                            ' = '
+                                            as sid-num     digits 
+                or 
+                                            as sql-type    non-wss 
+            
+        
+        
     - group-name: Adhoc
       wordy-to-terse: true
       tests:
+        - name: non-nl
+          terse: |
+              ??
+          terse-options:  x
+          embed-original: true
+          wordy: |
+            not newline
+            not whitespace
+            not whitespace d e f
+            non-whitespace
+            non-newline
+            not newline a b c
+
+        - name: Then example 1
+          terse: |
+              ((?:(?:cc[dc]|d))?)[ab](?:cd|e)(?:hi|[gj])(?:go|stop)pqr{2}s(t)u{3}
+          terse-options: -x
+          embed-original: false
+          wordy: |
+            capture optional
+                either 'cc' then d c
+                or     d
+            a or b then 'cd' or e then g or 'hi' or j then 'go' or 'stop'
+            p then q
+            two r then s then capture t then three u      
+        - name: casing of control constants
+          wordy: |
+            control-A to control-G
+          terse: |
+            [\cA-\cG]
+        - name: Then examples
+          terse: |
+              ((?:(?:cc[dc]|d))?)[ab](?:cd|e)(?:hi|[gj])(?:go|stop)pqr{2}s(t)u{3}
+          terse-options: -x
+          embed-original: false
+          wordy: |
+            capture optional
+                either 'cc' then d c
+                or     d
+            a or b then 'cd' or e then g or 'hi' or j then 'go' or 'stop'
+            p then q
+            two r then s then capture t then three u
+        - name: Then example 2
+          terse: |
+              (?s:\[(.+)\]\[([^\n]+)\])
+          terse-options: -x
+          embed-original: false
+          wordy: |
+            [ then get chs then ]
+            [ then get non-newlines then ]
+        - name: Then example 3
+          terse: |
+              squares\[([^\n]+)\] angles<(\D+)> rounds[(]((?u:\P{Letter}+))[)][A-Za-z]+ queries[?]([^?*]+)[?]
+          terse-options: x
+          embed-original: false
+          wordy: |
+            'squares'
+            [ then get non-newlines then ]
+            'angles'
+            < then get non-digits   then >
+            'rounds'
+            ( then get uni non-letters  then ) then letters
+            'queries'
+            ? then get one or more not ? or *   then ?
+        - name: TODO Incorrect order of capture/optional
+          terse: |
+              (a?)(b)?((?:(?:c|d))?)((?:(?:e|f)))?
+          terse-options: -x
+          wordy: |
+            capture optional a
+            optional capture b
+            capture optional
+                either c
+                or     d
+            optional capture
+                either e
+                or     f
+            
         - name: Either/or at end of wordy
           terse: |
               (?:aa\d|bb\w|b2|b3)cc(?:dd\D|ee|ff\d) 
@@ -2831,60 +3060,98 @@ groups:
                   digit
               'gg'
 EOTESTS
+#
 
-my $data = 'a B d c E h b m';
-my $w = wret 'a b c';
+        my $data = 'a b d 3 g';
+        if ($data =~ wre 'letter')  { pass 'wre1' } else {fail 'wre1'};
+        
+        $data = '4 3 1';
+        if ($data =~ wre 'letter')  { fail 'wre1a' } else {pass 'wre1a'};
+        
+        # Decide if the contents of $_ matches your wordy regexp
+        $_ = 'h k 7 p';
+        if (wre 'letter')  { pass 'wre2' } else {fail 'wre2'};
+        
+        $_ = '4 3 1';
+        if (wre 'letter')  { fail 'wre2a' } else {pass 'wre2a'};
+        
+        $data = 'a b d 3 g';
+        my $wre_1 = wre 'letter';
+        if ($data =~ /$wre_1/)  { pass 'wre3' } else {fail 'wre3'};
+        
+        
+        $data = '1 3 8';
+        if ($data =~ /$wre_1/)  { fail 'wre3a' } else {pass 'wre3a'};
+        
+        my $wre_2 = wre 'get one letter';
+        $data = 'a b d 3 g';
+        while ($data =~ /$wre_2/g){
+            print "$1\n";
+        }
 
-# $data =~ s/${wret 'a b c'}//);
-$data =~ s/${wret 'uncased e h'}/k/gx;
+        my $pause = 1;
 
-
-# $data =~ s/${wre 'b'}/k/gx;  # Fails because wre does not return a reference
-
-my $wre_obj = wre 'uncased b';
-$data =~ s/$wre_obj/k/gx;  # OK, as $wre_obj interpolates as a qr-literal
-eval {
-    $data =~ s/${wre 'uncased b'}/k/gx;  # Fails because wre does not return a reference
-};
-print "wre(): $@";
-
-eval {
-    $data =~ s/${wret 'uncased b'}/k/gx;  # OK because wret returns a reference
-};
-print "wret(): $@";
-
-$data =~ s/${wret 'b'}/k/gx;
-
-$data =~ s/[ ]/q/g;
-$w = wret "capture a b c";
-while ($data =~ /${wret "capture a b c"}/g) {
-    print "# next abc letter: $1\n"
-}
-while ($data =~ /${wret "as let a b c"}/g) {
-    print "# next letter: $+{let}\n"
-}
-
-
-while ($data =~ /${wret "\tas let\n  \ta b c"}/g) {
-    # Tab rules mean that 'a b c' is not indented from 'as let'
-    # So we don't capture anything: there is an error message, but it is not
-    # checked for
-    print "# dodgy next letter: $+{let}\n"
-}
-
-
-while ($data =~ /${wret "      as let\n\t   a b c"}/g) {
-    print "# tabby next letter: $+{let}\n"
-}
-
-while ($data =~ /${wret "      as let\n  \t   a b c"}/g) {
-    print "# tabby2 next letter: $+{let}\n"
-}
-
-my @n = ( $data =~ /[^x]/g );
-if ( $data =~ /${wret 'a b c'}/g ) {
-    my $pause = 1
-};
+#my $data = 'a B d c E h b m';
+#my $w = wre 'control-a';
+#my $w2 = wre <<"...";
+##              hex-34 control-G space
+##              ?
+#...
+#my $w3 = wret <<"...";
+##              hex-34 control-G space
+##              ?
+#...
+#
+## $data =~ s/${wret 'a b c'}//);
+#$data =~ s/${wret 'uncased e h'}/k/gx;
+#
+#
+## $data =~ s/${wre 'b'}/k/gx;  # Fails because wre does not return a reference
+#
+#my $wre_obj = wre 'uncased b';
+#$data =~ s/$wre_obj/k/gx;  # OK, as $wre_obj interpolates as a qr-literal
+#eval {
+#    $data =~ s/${wre 'uncased b'}/k/gx;  # Fails because wre does not return a reference
+#};
+#print "wre(): $@";
+#
+#eval {
+#    $data =~ s/${wret 'uncased b'}/k/gx;  # OK because wret returns a reference
+#};
+#print "wret(): $@";
+#
+#$data =~ s/${wret 'b'}/k/gx;
+#
+#$data =~ s/[ ]/q/g;
+#$w = wret "capture a b c";
+#while ($data =~ /${wret "capture a b c"}/g) {
+#    print "# next abc letter: $1\n"
+#}
+#while ($data =~ /${wret "as let a b c"}/g) {
+#    print "# next letter: $+{let}\n"
+#}
+#
+#
+#while ($data =~ /${wret "\tas let\n  \ta b c"}/g) {
+#    # Tab rules mean that 'a b c' is not indented from 'as let'
+#    # So we don't capture anything: there is an error message, but it is not
+#    # checked for
+#    print "# dodgy next letter: $+{let}\n"
+#}
+#
+#
+#while ($data =~ /${wret "      as let\n\t   a b c"}/g) {
+#    print "# tabby next letter: $+{let}\n"
+#}
+#
+#while ($data =~ /${wret "      as let\n  \t   a b c"}/g) {
+#    print "# tabby2 next letter: $+{let}\n"
+#}
+#
+#my @n = ( $data =~ /[^x]/g );
+#if ( $data =~ /${wret 'a b c'}/g ) {
+#    my $pause = 1
+#};
 
 
 my $v = YAML::Validator->new($schema);
@@ -2930,17 +3197,30 @@ for my $group_ref ( @{$groups_ref}) {
                     ## errors more elegantly
                     my $terse_options = $test_ref->{'terse-options'} || '';
                     my $free_space = $terse_options =~  /  ^ [^-]* x /x;
-                    my $generated_tre = _wre_to_tre($wordy,
-                                                    {free_space     => $free_space,
-                                                     embed_original => 0,
-                                                     wrap_output    => 0}
-                                                    );    # Makes a wre object
-                    if (defined $terse) {
-                        # We have been supplied a terse regexp to compare with
-                        is($generated_tre, $terse, "$group_name: $test_name: tre as expected");
+                    my $generated_tre =
+                          _wre_to_tre($wordy,
+                                    {free_space     => $free_space,
+                                     embed_original => $test_ref->{'embed-original'},
+                                     wrap_output    => 0}
+                                     );    # Makes a wre object
+                    if ($group_name =~ / todo /ix || $test_name =~ / todo /ix) {
+                      TODO:
+                        local $TODO = "To Do items";
+
+                        if (defined $terse) {
+                            # We have been supplied a terse regexp to compare with
+                            is($generated_tre, $terse, "$group_name: $test_name: tre as expected");
+                        }
+                        # Check the generated tre using the matches provided
+                        check_matches($test_ref, $generated_tre, $group_name, $test_name);
+                    } else {
+                        if (defined $terse) {
+                            # We have been supplied a terse regexp to compare with
+                            is($generated_tre, $terse, "$group_name: $test_name: tre as expected");
+                        }
+                        # Check the generated tre using the matches provided
+                        check_matches($test_ref, $generated_tre, $group_name, $test_name);
                     }
-                    # Check the generated tre using the matches provided
-                    check_matches($test_ref, $generated_tre, $group_name, $test_name);
                 }
             }
             if ($test_terse_to_wordy) {
@@ -2952,13 +3232,36 @@ for my $group_ref ( @{$groups_ref}) {
                     ## Might need to call a more complex routine, e.g. to handle
                     ## errors more elegantly
                     my $terse_options = $test_ref->{'terse-options'} || '';
-                    my $generated_wordy = tre_to_wre($terse, $terse_options); 
-                    if (defined $wordy) {
-                        # We have been supplied a wordy regexp to compare with
-                        is($generated_wordy, $wordy, "$group_name: $test_name: wordy as expected");
+                    my $generated_wordy = tre_to_wre($terse, $terse_options);
+                    if ($group_name =~ / todo /ix || $test_name =~ / todo /ix) {
+                      TODO:
+                        local $TODO = "To Do items";
+                        if (defined $wordy) {
+                            # We have been supplied a wordy regexp to compare with
+                            is($generated_wordy, $wordy, "$group_name: $test_name: wordy as expected");
+                        }
+                        # Check the wordy using the matches provided
+                        my $wre;
+                        eval {$wre = wre($wordy)};
+                        if ($@) {
+                            fail "$group_name: $test_name: wre() aborted, $@";
+                        } else {
+                            check_matches($test_ref, wre($wordy), $group_name, $test_name);
+                        }
+                    } else {
+                        if (defined $wordy) {
+                            # We have been supplied a wordy regexp to compare with
+                            is($generated_wordy, $wordy, "$group_name: $test_name: wordy as expected");
+                        }
+                        # Check the wordy using the matches provided
+                        my $wre;
+                        eval {$wre = wre($wordy)};
+                        if ($@) {
+                            fail "$group_name: $test_name: wre() aborted, $@";
+                        } else {
+                            check_matches($test_ref, wre($wordy), $group_name, $test_name);
+                        }
                     }
-                    # Check the wordy using the matches provided
-                    check_matches($test_ref, wre($wordy), $group_name, $test_name);
                 }                
             }
         }
