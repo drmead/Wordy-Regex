@@ -226,15 +226,15 @@ groups:
           # Note the terse output is really one long string, but we input it
           # here using a YAML block that puts a single space between each line
           terse: >
-            Plain quoted string
-            Mrs\. O'Grady said "Hello!"
-            Mrs\. O'Grady said "Hello!"
-            Mrs\. O'Grady said 'Hello!'
-            Mrs\. O'Grady said 'Hello!'
-            Mrs\. O'Grady said "Hello!"
-            Mrs\. O'Grady said "Hello!" and laughed
-            Mrs\. O'Grady said 'Hello!' and laughed
-            
+            Plain[ ]quoted[ ]string
+            Mrs\.[ ]O'Grady[ ]said[ ]"Hello!"
+            Mrs\.[ ]O'Grady[ ]said[ ]"Hello!"
+            Mrs\.[ ]O'Grady[ ]said[ ]'Hello!'
+            Mrs\.[ ]O'Grady[ ]said[ ]'Hello!'
+            Mrs\.[ ]O'Grady[ ]said[ ]"Hello!"
+            Mrs\.[ ]O'Grady[ ]said[ ]"Hello!"[ ]and[ ]laughed
+            Mrs\.[ ]O'Grady[ ]said[ ]'Hello!'[ ]and[ ]laughed
+
         - name: whitespace
           notes: Is whitepace always treated as a plural? No!
           wordy: |
@@ -259,11 +259,11 @@ groups:
             'Mrs. O'Grady said "Hello!" and laughed'
             ";"
             "Mrs. O'Grady said 'Hello!' and laughed"
-          terse-options:
+          terse-options: -x
           terse: |
-            Mrs\.[ ]O'Grady[ ]said[ ]"Hello!";Mrs\.[ ]O'Grady[ ]said[ ]'Hello!';Mrs\.[ ]O'Grady[ ]said[ ]'Hello!';Mrs\.[ ]O'Grady[ ]said[ ]"Hello!";Mrs\.[ ]O'Grady[ ]said[ ]"Hello!"[ ]and[ ]laughed;Mrs\.[ ]O'Grady[ ]said[ ]'Hello!'[ ]and[ ]laughed
+            Mrs\. O'Grady said "Hello!";Mrs\. O'Grady said 'Hello!';Mrs\. O'Grady said 'Hello!';Mrs\. O'Grady said "Hello!";Mrs\. O'Grady said "Hello!" and laughed;Mrs\. O'Grady said 'Hello!' and laughed
         
-        - name: Quoted string, free spacing mode
+        - name: Quoted string, free spacing mode with semi-colons
           notes: 
           wordy: |
             'Mrs. O'Grady said "Hello!"'
@@ -279,7 +279,7 @@ groups:
             "Mrs. O'Grady said 'Hello!' and laughed"
           terse-options: x
           terse: |
-            Mrs\. O'Grady said "Hello!"; Mrs\. O'Grady said 'Hello!'; Mrs\. O'Grady said 'Hello!'; Mrs\. O'Grady said "Hello!"; Mrs\. O'Grady said "Hello!" and laughed; Mrs\. O'Grady said 'Hello!' and laughed
+            Mrs\.[ ]O'Grady[ ]said[ ]"Hello!"; Mrs\.[ ]O'Grady[ ]said[ ]'Hello!'; Mrs\.[ ]O'Grady[ ]said[ ]'Hello!'; Mrs\.[ ]O'Grady[ ]said[ ]"Hello!"; Mrs\.[ ]O'Grady[ ]said[ ]"Hello!"[ ]and[ ]laughed; Mrs\.[ ]O'Grady[ ]said[ ]'Hello!'[ ]and[ ]laughed
 
         - name: Paragraph numbers and headings
           notes:
@@ -2799,20 +2799,55 @@ groups:
       tests:
         - name: space-means-wss 1
           terse-options: -x
-          embed-original: true        
-          terse: |
-              [ #][ ]longer\s+quoted\s+string[ #][ ]longer\squoted\sstringa[ ]quoted[ ]string
           wordy: |
                 space-means-wss
+                     'quoted string with space-means-wss'
                      ' ' hash
-                     ' '
-                     'longer quoted string'
+                     '  ' colon # two-space string
+                     ' '        # single-space string
                 space-means-ws
+                     'quoted string with space-means-ws'
                      ' ' hash
-                     ' '
-                     'longer quoted string'
+                     '  ' colon # two-space string
+                     ' '        # single-space string
                      space-means-space
-                        'a quoted string'
+                        'quoted string with space-means-space'
+                        ' ' hash
+                        '  ' colon # two-space string
+                        ' '        # single-space string
+                     'back to with space-means-ws'
+                     ' ' hash
+                     '  ' colon # two-space string
+                     ' '        # single-space string
+          terse: |
+              [ #][ ]longer\s+quoted\s+string[ #][ ]longer\squoted\sstringa quoted string
+
+        - name: space-means-wss x-mode on
+          terse-options: x
+          embed-original: false      
+          
+          wordy: |
+                space-means-wss
+                     'quoted string with space-means-wss'
+                     ' ' hash
+                     '  ' colon # two-space string
+                     ' '        # single-space string
+                space-means-ws
+                     'quoted string with space-means-ws'
+                     ' ' hash
+                     '  ' colon # two-space string
+                     ' '        # single-space string
+                     space-means-space
+                        'quoted string with space-means-space'
+                        ' ' hash
+                        '  ' colon # two-space string
+                        ' '        # single-space string
+                     'back to with space-means-ws'
+                     ' ' hash
+                     '  ' colon # two-space string
+                     ' '        # single-space string
+          terse: |
+              [ #][ ]longer\s+quoted\s+string[ #][ ]longer\squoted\sstringa quoted string               
     ##########
 
     - group-name: very-long
@@ -2921,11 +2956,18 @@ groups:
     - group-name: Adhoc
       wordy-to-terse: true
       tests:
+        - name: Embedded spaces in quoted string, /x mode
+          terse: |
+              to[ ]be
+          terse-options:  x
+          embed-original: false
+          wordy: |
+            'to be'
         - name: non-nl
           terse: |
-              ??
+              [^\n]\S[^\sdef]\S[^\n][^\nabc]
           terse-options:  x
-          embed-original: true
+          embed-original: false
           wordy: |
             not newline
             not whitespace
@@ -3062,6 +3104,15 @@ groups:
 EOTESTS
 #
 
+        ok('a b d 3 g' =~ wre 'letters');
+        $_ = 'a b d 3 g';
+        ok(wre 'letters');
+        $_ = 'a b d 3 g';
+        ok(not wre 'colons');
+        $_ = ':::';
+        ok(wre 'colons');
+        ok(not wre 'letters');
+        
         my $data = 'a b d 3 g';
         if ($data =~ wre 'letter')  { pass 'wre1' } else {fail 'wre1'};
         
