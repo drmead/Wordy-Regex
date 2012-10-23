@@ -27,10 +27,7 @@ SYNOPSIS:
 
     Procedural interface:
         
-        
-        wre() is the main procedural interface routine. You pass it a wordy
-        regular expression, and it returns an object that can be used where you
-        would otherwise use a conventional (terse) regular expression.
+    wre()
         
         # Decide if the contents of $data matches your wordy regexp
         if ($data =~ wre '<your wordy regexp>')  { ... }
@@ -38,30 +35,131 @@ SYNOPSIS:
         # Decide if the contents of $_ matches your wordy regexp
         if (wre '<your wordy regexp>')  { ... }
         
-        # Assign the regexp to a scalar, then use it later
+        # Assign a regexp to a scalar, then use it later
         my $wre_1 = wre '<your wordy regexp>';
         if ($data =~ /$wre_1/)  { ... }
         
-        # Use the regex with global mode (/g) 
-        while ($data =~ /$wre_1/g) {
+        # Use a regex with global mode (/g)
+        my $wre_2 = wre '<your wordy regexp>';
+        while ($data =~ /$wre_2/g) {
             print "$1\n";
         }
         
-        wret() is an alternative routine that is only needed in the situation
-        where:
-            (1) you want to put your wordy regexp directly in-line, rather than
-                assign the regexp to an intermediate variable, and
-            (2) you need to use the global mode (/g)
+        # Use a regexp in a substitution
+        my $wre_3 = wre '<your wordy regexp>';
+        $data =~ s/$wre_3/<replacement text>/g;
             
+    wret()        
+            
+        wret() is only needed when you want to avoid using an intermediate
+        variable, which would otherwise be needed for:
+        
+            - global matches (where you need to use the /g mode flag)
+            - substitutions (s///).
+            
+        # Use the regex in-line with global mode
         while ($data =~ /${wret '<your wordy regexp>'}/g) {
             print "$1\n";
         }
         
+        # Use the regex in a substitution
+        $data =~ s/${wret '<your wordy regexp>'}/<replacement text>/g;
+        
+        
     OO interface:
     
+        # Create a wordy regexp object
+        my $wre = RegExp::Wre->new('<your wordy regexp');
+        
+        # Decide if the contents of $data matches your wordy regexp
+        if ($data =~ $wre) { ... }
+        
+        # Decide if the contents of $_ matches your wordy regexp
+        if ($wre)  { ... }
+        
+        # Use the regex with global mode (/g)
+        while ($data =~ /$wre/g) {
+            print "$1\n";
+        }        
+        
+        # Use the regexp in a substitution
+        $data =~ s/$wre/<replacement text>/g;
+        
+    Wordy Regexp Notation:
+    
+        A wordy regular expression is a string
+    
+    Wordy Regexp Notation Examples:
+    
+        'cat'       # Simple sequence of characters, the three letter c, a and t
+        
+        a f p       # Simple alternative. One character: either a, f or p
+        
+        2 * $ =     # Simple alternative. One character: either 2, *, $ or =
+        
+        c 'dog' e   # Alternatives: just c, all three letters d, o, g, or just e
+        
+        two digits  # Exactly two digits. Note that the quantity is a word
+        
+        one or more letters
+        zero or more digits
+        one to five digits
+        
+        five digits letters # Five characters, each can be a digit or a letter
+        
+        
+        
+        
+DESCRIPTION:        
+        
+    Procedural Interface
+        
+        The intention is that wre() can be used as a drop-in replacement for a
+        conventional regular expression used for simple matching and capturing.
+
+        wre() is the main procedural interface routine. You pass it a wordy
+        regular expression, and it returns an object that can be used where you
+        would otherwise use a conventional (terse) regular expression.
+
+        wret() is an alternative routine that is only needed in the situation
+        where:
+            (1) you want to put your wordy regexp directly in-line, rather than
+                assign the regexp to an intermediate variable, and
+            (2) you need to match using the global mode (/g), or do a substitution 
+
+    OO interface:
+    
+        The oo interface is intended for situations where:
+            
+            Error Trapping is Important
+            
+              Both the procedural interface and the oo interface can only detect
+              errors in a wordy regular expression at run time.
+              
+              However, using the oo interface allows the programmer to create
+              wordy regexp objects at program initiation, so any errors in wordy
+              regexps are detected at the start of the run.
+              
+              If the wordy regexp changes dynamically using interpolation, then
+              it can't be checked until immediately before use; but the same
+              problem affects conventional regexps that use interpolation.
+              
+              The oo interface also provides cleaner access to error information.
+              The procedural interface is restricted to returning an error string
+              via croak(), whereas the oo interface can persist more detail in
+              the Wre object.
+              
+            Efficiency is Crucial
+            
+              There is an efficiency advantage for the oo interface. Using the
+              procedural interface requires the wordy regexp text to be checked
+              against the cache of previously-converted regexeps every time: for
+              the oo interface this only needs to be done once when the object
+              is created. However, the cache check is just a simple hash access,
+              so it is typically very fast.
         
 
-DESCRIPTION:
+
 
 
 
@@ -132,11 +230,11 @@ Rules for matching single and double quotes - revisit?
     In the second line above, that's part of a quoted string, not a comment
     Disallow naked quotes? It's simple to explain.
     Would need short synonyms such as SQ or DQ as alternatives to apostrophe,
-     double-quote, '"' and "'" 
+     double-quote, and the ugly quoted-quotes '"' and "'" 
 Unicode options
 Numeral vs. digit
 then
-space-means-whiteapace option
+space-means-whitespace/whitespaces/space options
 back-references
 condition
 
@@ -155,9 +253,10 @@ my $embed_source_regex;
 # Option: causes a single space to be generated as [ ] even if /x mode is off
 # It's a readability preference, and might have some slight performance penalty.
 # Currently it's a constant as there is no mechanism to change it
-# BUG: Setting it to false results in spaces not being enclosed in [ ] even
-#      when /x mode is on
-my $put_solo_space_into_class = 1;
+# BUG: Setting it to false?? results in [\s+] instead of [\s]+ in space-means-wss
+# mode
+
+my $put_solo_space_into_class = 0;
 
 # Characters to put into a character class even when solo.
 # It's a readability preference: we have to generate (e.g.) either [*] or \* 
@@ -165,16 +264,7 @@ my $put_solo_space_into_class = 1;
 # backslash introduces a group (such as \d) or a special character (such as \t)
 # rather than escaping a regex meta-character.
 my $prefer_class_to_escape = 1;
-my %char_class_even_when_solo = (' ' => $xsp ? 1 : $put_solo_space_into_class,
-                                 '(' => $prefer_class_to_escape,
-                                 ')' => $prefer_class_to_escape,
-                                 '|' => $prefer_class_to_escape,
-                                 '.' => $prefer_class_to_escape,
-                                 '+' => $prefer_class_to_escape,
-                                 '?' => $prefer_class_to_escape,
-                                 '*' => $prefer_class_to_escape,
-                                 '^' => $prefer_class_to_escape,
-                                 );
+my %char_class_even_when_solo;
 my $DEBUG = 0;
 my $comment_starter = '#';      # Standard for Perl
 my $regex_starter   = '/';      # Globals used by character encoder and regex 
@@ -310,6 +400,8 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
                     eol                => 'end_of_line'          ,
                     eopm               => 'end_of_previous_match',
                     get                => 'capture'              ,
+                    gnl                => 'generic_newline'      ,
+                    gnls               => 'generic_newlines'     ,
                     look_behind        => 'preceding'            ,
                     lookbehind         => 'preceding'            ,
                     look_ahead         => 'followed_by'          ,
@@ -393,6 +485,9 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
                         wss         => 'whitespace',
                         wordchs     => 'wordch',
                         wordchars   => 'wordch',
+                        genericnewlines
+                                    => 'genericnewline',
+                                    
                         );
     
     my %group_words = (letter     => 'noun',
@@ -601,7 +696,7 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
         #                returns a terse one.
         #   documented:
         #       wre() is passed both an wordy regexp and a terse one.
-        #             returns a terse regexp generated from the wordy regexp
+        #             Returns a terse regexp generated from the wordy regexp
         #                
         #   fallback/test:
         #       wre() is passed both an wordy regexp and a terse one.
@@ -631,7 +726,7 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
         #            It could also be used to avoid the generation step that
         #            would otherwise be needed. However, the performance gain
         #            may be modest as generated regexps will usually be cached,
-        #            and showing all three regexps would be very confusing.
+        #            and showing all three regexps could be confusing.
         #
         #  If the original program was written using wordy regexps:
         #       (d) The original wordy regexp as written by the programmer
@@ -653,21 +748,25 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
         #             original regexp visible as documentation, e.g. for
         #             maintainers who do not understand wordy regexps.
         #
-        #             However, code with a mixture of 'live' indented regexps
+        #             However, code with a mixture of 'live' wre regexps
         #             and 'live' terse regexps needs to be avoided.
-        #             If a maintainer changes the original regexp but does not
-        #             regenerate the corresponding wre, the change would be
+        #             If a maintainer changed the original regexp but did not
+        #             regenerate the corresponding wre, the change would become
         #             effective only when the global switch was set to use the
         #             original regexp: it would regress when that switch was changed.
         #
-        #           - Use the global switch to simplify testing of a program
-        #             that has had the auto-conversion process applied.
+        #           - Use of the global switch to simplify testing of a program
+        #             that has had the auto-conversion process applied. The
+        #             program can be run against the same test both with the
+        #             flag set to 'use the wordy' and with it set to 'use
+        #             terse', and the test results compared.
         #
         #
-        # To enable automated detection, the conversion utility can output
-        # digests of both the generated and original regexps. These can be used
-        # to detect whether either (or both) of the supplied regexps have been
-        # manually edited, in which case they may not be functionally equivalent.
+        # To enable automated detection of manual changes, the conversion
+        # utility can output digests of both the generated and original regexps.
+        # These can be used to detect whether either (or both) of the supplied
+        # regexps have been manually edited, in which case they may not be
+        # functionally equivalent.
         #
         # Auto-detection of changes could be done by a check utility, and/or
         # dynamically at code execution.
@@ -743,8 +842,31 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
         ## default (maybe unicode setting?) is being over-ridden - but I
         ## can't think of a convincng use case.
                 
-        my ($wre, $terse) = @_;
+        my ($wre, $arg2, $arg3) = @_;
+        my $number_of_args = scalar @_;
+        my $terse = '';
+        my $option_ref = { };
         
+        if ($number_of_args < 1) {
+            croak "RegExp::Wre wre(): No arguments passed";
+        } elsif ($number_of_args > 3) {
+            croak "RegExp::Wre wre(): Too many arguments passed ($number_of_args)";
+        } elsif ($number_of_args == 2) {
+            # Two args: wordy + tre, or wordy + options
+            if (ref $arg2 eq 'HASH') {
+                # wordy + options
+                $option_ref = $arg2;        
+            } else {
+                $option_ref = $arg2;
+            }
+        } else {
+            # Must be 3 args
+            $terse = $arg2;
+            $option_ref = $arg3;
+        }
+
+        
+      
         my $self = { };
         
         $self->{wre} = $wre;      # Stash the wre in the new object
@@ -773,12 +895,12 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
             my $pause = 7;
         } else {
             # Convert the wre to a qr regex literal
-            my $terse = _wre_to_tre($wre);
+            my $terse = _wre_to_tre($wre, $option_ref);
             
             eval {$qr = qr/$terse/x};
             
             if ($@) {
-                croak "Invalid regex generated: $@";
+                croak "RegExp::Wre wre(): Invalid regex generated: $@";
             }
             
             if ($memo_size < $memo_max_chars) {
@@ -825,14 +947,15 @@ sub wret {
     my $wre_obj = wre($wre, $options_ref);
     return $wre_obj->{'terse'};
 }
+
 sub new {
-    my ($class, $wre) = @_;
+    my ($class, $wre, $options_ref) = @_;
     
     my $self = { };
     
     ## say ('in wre');    
 
-    my $terse = _wre_to_tre($wre);
+    my $terse = _wre_to_tre($wre, $options_ref);
     $self->{'terse'} = $terse;
     $self->{'ire'} = $wre;
     
@@ -844,7 +967,7 @@ sub new {
 sub _regex {
     my ($self, $other, $swap) = @_;
     my $terse = $self->{terse};
-    ## say "in regex: returning $terse";
+    #say ("in regex: returning $terse");
     ## my $pause = 1;
     return $terse;
 }
@@ -1311,6 +1434,7 @@ sub flag_value {
                                             # Treat plural as singular if we have seen
                                             # an explicit numeric quantifier on this line
                                  negated => $word_is_negated,
+                                 raw     => $token_raw,
                                 };
             my $pending_is_single = $LIT_TYPE_SINGLE_CHAR{$literal_type};
             
@@ -1931,31 +2055,57 @@ sub _generate_regex {
         my $string_count = 0;
         my $matcher_count = 0;
         my $overall_negated = $node_ref->{overall_negation} || 0;
-        
+
+ 
+                                            
         for my $lit_ref (@{$node_ref->{literal}}) {
             # for each literal/assertion
             my $lit_val     = $lit_ref->{value};
             my $lit_type    = $lit_ref->{type};
             my $lit_negated = $lit_ref->{negated};
-            $sing_or_plural = $lit_ref->{plural} || 0;
-            #if (   $lit_type eq $LT_CHAR
-            #    || $lit_type eq $LT_CONTROL
-            #    || $lit_type eq $LT_HEX
-            #    || $lit_type eq $LT_OCTAL) {
+            $sing_or_plural = $lit_ref->{plural} ? $PLURAL : $SINGULAR;
+
+            my $encoding_for_space_non_class
+                 = $combined_ref->{space_means} eq '+' ? '\\s+'  :
+                   $combined_ref->{space_means} eq '1' ? '[\\s]' : 
+                                                 $xsp  ? '[ ]'   : ' ';
+            my $encoding_for_space_class
+                 = $combined_ref->{space_means} eq '+' ? '\\s'   :
+                   $combined_ref->{space_means} eq '1' ? '\\s'   :  ' ';
+                   
             if ($LIT_TYPE_SINGLE_CHAR{$lit_type}) {
                  # Literal is a single char, or maybe a plural such as 'spaces'
+                 # If it is a space, its meaning depends on whether it was
+                 # specified as a quoted string (' ' or " ") or as the keyword
+                 # 'space'. A quoted space is affected by space-means-x.
+                 
+                 if ($lit_ref->{raw} =~ /^ ['"] [ ] ['"] /x) {
+                    # Literal was a single space, within quotes
+                    if ($combined_ref->{space_means} eq '+') {
+                        # space-means-wss here, so ' ' is a plural
+                        $sing_or_plural = $PLURAL;
+                        $encoding_for_space_non_class = '\\s';
+                        $encoding_for_space_class = '\\s';
+                    }
+                 } else {
+                    # Literal was not a quoted space
+                    # Disable space-means-x stuff
+                    $encoding_for_space_non_class = $xsp  ? '[ ]'   : ' ';
+                    $encoding_for_space_class     = ' ';
+                 }
+                 
                 $char_control[$sing_or_plural]++;
                 
                 if ($lit_type eq $LT_CHAR) {
                     # Not a pre-encoded character such as one specified by its
                     # hex value, or a control character
                 
-                    $single_char[$sing_or_plural] = _char_non_class_encode($lit_val);
+                    $single_char[$sing_or_plural] = _char_non_class_encode($lit_val, $encoding_for_space_non_class);
                     
                     if ($lit_val eq '-') {
                         $leading_dash[$sing_or_plural] = '-';
                     } else {
-                        $chars[$sing_or_plural] .= _char_class_encode($lit_val);
+                        $chars[$sing_or_plural] .= _char_class_encode($lit_val, $encoding_for_space_class);
                     }
                 } else {
                     $single_char[$sing_or_plural] = $lit_val;
@@ -1967,7 +2117,7 @@ sub _generate_regex {
                 if ($lit_negated) {
                     ## This looks a bit hackish...
                     ## ...it forces character classes to be all negated,
-                    ##    which is probaly OK if multiple-negative are not
+                    ##    which is probably OK if multiple-negative are not
                     ##    allowed - but that error may not be being reported
                     $overall_negated = 1;   
                 }
@@ -1977,16 +2127,13 @@ sub _generate_regex {
             } elsif ($lit_type eq $LT_SEQUENCE) {
                 # Literal is a string, but more than a single character
                 # Encode any of the characters that needs it
+                # The meaning of an embedded space depends on space-means-x
                 $string_count++;
                 my @string_chars = split('', $lit_val);
                 #my @encoded = map { _char_non_class_encode($_) } @string_chars;
                 my $encoded_val = '';
                 for my $sch (@string_chars) {
-                    my $encoding_for_space
-                        = $combined_ref->{space_means} eq '+' ? '\\s+' :
-                          $combined_ref->{space_means} eq '1' ? '\\s'  : 
-                                                          $xsp ? ' '    : '[ ]';
-                    $encoded_val .= _char_non_class_encode($sch, $encoding_for_space);
+                    $encoded_val .= _char_non_class_encode($sch, $encoding_for_space_non_class);
                 }
                 if ($strings) {
                     # Not first string
@@ -1994,7 +2141,6 @@ sub _generate_regex {
                 } else {
                     # First string
                     $strings = $xsp . $encoded_val;
-                    ##$strings = $xsp . $encoded_val unless $HACK;
                 }
             } elsif ($lit_type eq $LT_RANGE) {
                 $char_control[$sing_or_plural] = 99;
@@ -2016,6 +2162,7 @@ sub _generate_regex {
                     # Sometimes _letter_class() will return a string (such as
                     # \p{Letter} ) that will work inside or outside a character
                     # class: other times it will return a range (such as A-Z)
+                    # that has to be within a character class
                     my ($force_class, $chars_format);
                     ($single_char[$sing_or_plural], $force_class) =
                                             _letter_class($lit_val,
@@ -2057,9 +2204,15 @@ sub _generate_regex {
                     if ($lit_negated || $overall_negated) {
                         _error("generic_newline is not allowed to be negated");
                     }
-                    $single_char[$sing_or_plural] = "\\R";
-                    $chars[$sing_or_plural] .= "\\R";
-                    $char_control[$sing_or_plural]++;
+                    ##$single_char[$sing_or_plural] = "\\R";
+                    ##$chars[$sing_or_plural] .= "\\R";
+                    ##$char_control[$sing_or_plural]++;
+                    # Generic newline is treated as a string as it is not
+                    # allowed to go into a class
+                    $string_count++;
+                    $strings .= ($strings ? ($xsp . '|' . $xsp) : '')
+                             . "\\R"
+                             . ($lit_ref->{plural} ? '+' : '');
                 } else {
                     _error("Unimplemented group: $lit_val");
                     ########## group, but unknown
@@ -2464,7 +2617,7 @@ Append ? if optional    X X X X X X - - - - - X X X X X X X X X
 sub _char_class_encode {
     # Returns the character class entry for a single character
     
-    my ($ch) = @_;
+    my ($ch, $space_option) = @_;
     my $encoded_ch = _char_encode($ch);
     
     if (length $encoded_ch > 1) {
@@ -2479,7 +2632,9 @@ sub _char_class_encode {
         ## if it differs from the finishing delimiter
         return "\\$encoded_ch";
     }
-    if ( $encoded_ch ne ' ' && $encoded_ch =~ / [ \[ \] \\ \$ \@ \^ ] /x) {
+    if ($encoded_ch eq ' ') {
+        $encoded_ch = $space_option;
+    } elsif ( $encoded_ch =~ / [ \[ \] \\ \$ \@ \^ ] /x) {
         # regex above has spaces only for readability        
         # One of the meta-characters that need escaping, even inside a
         # character class
@@ -2747,7 +2902,12 @@ sub _wre_to_tre {
     #     warning:
     #   
     # Options:
-    #   To be defined, but probably passed in as a reference to a hash
+    #   Passed in as a reference to a hash
+    #   Implemented:
+    #       free_space     (boolean)
+    #       embed_original (boolean)
+    #       wrap_output    (boolean)
+    #       regex_delimiters (one character, or a matched pair)
     #   Candidate stuff:
     #   - Source details:
     #       Text format: 
@@ -2806,7 +2966,16 @@ sub _wre_to_tre {
     $embed_source_regex = $EMBED_ORIGINAL_REGEX
                       && $GENERATE_FREE_SPACE_MODE; # Only possible if /x mode
 
-    
+    my %char_class_even_when_solo = (' ' => $xsp ? 1 : $put_solo_space_into_class,
+                                 '(' => $prefer_class_to_escape,
+                                 ')' => $prefer_class_to_escape,
+                                 '|' => $prefer_class_to_escape,
+                                 '.' => $prefer_class_to_escape,
+                                 '+' => $prefer_class_to_escape,
+                                 '?' => $prefer_class_to_escape,
+                                 '*' => $prefer_class_to_escape,
+                                 '^' => $prefer_class_to_escape,
+                                 );
     load_ire_lines($ire_string);
     clear_generated_output();
     
@@ -2939,7 +3108,7 @@ sub process_line {
         if ($chunk_result < 0) {
             # 'then' found, so end of sub-line
             $chunker_found_then = 1;
-
+            $start_pos = token_pos();
             reset_line_flags();
             
             ## Checks here:
@@ -3907,16 +4076,16 @@ To Do:
 
  Terminology and Naming
     Regexp::Wre
-    'Compressed' or 'terse' for conventional regexes?
-    'Expanded' for indented regexes?
+    'tre' or 'terse' for conventional regexes
+    'wre' or 'wordy' for wordy regexes?
  
  Pathways for existing code:
  
   For any language:
-    Use utility to 'explain' an existing regex by converting to wre
+    Use utility to 'explain' an existing regexp by converting to a wre
     Embellish existing code with comments showing
       - the equivalent wre
-      - what that wre would generate (in case it's wrong)
+      - the tre that wre would generate (in case it's wrong)
  
  For language(s) with a wre library (Probably just Perl for a while)
  
