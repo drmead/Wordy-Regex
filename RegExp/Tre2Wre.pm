@@ -6,12 +6,29 @@ require Exporter;
 our (@ISA) = ("Exporter");
 our (@EXPORT) = qw(tre_to_wre);
 
+use YAML::XS;   ## Not needed for this program - this is a convenience for debugging.
+use IO::Handle;
+STDERR->autoflush(1);
 
 =format
 
 
 Tre2Wre.pm - Convert a Terse Regular Expression to a Wordy Regular Expression
 
+This is a development version of the module, with integrated tests
+
+===================================================
+
+TO DO:
+
+Error Handling:
+    - Keep track of line number and column position (in get_next_token?)
+    - Report line/col with error message
+    - Indicate position by graphic e.g.
+        Unrecognised escape sequence at line 1 column 9:
+           This is t\e input regex
+                    ^^
+        
 
 
 Tokenise:
@@ -86,15 +103,20 @@ sequence:
         # Each alternative is an array of parts
         -
             # Each part is an atom that can have its own quantifiers
-            # or a nested parenthesised sub-expression
+            # or a nested parenthesised sub-expression.
+            # mode_switch_a and mode_switch_b are only used for (?i) and (?-i)
+            # mode_switch_a is created where the mode switch is found:
+            # mode_switch_b is inserted at the start of each alternation where
+            # the mode switch still applies.
             -
-                type:   char_class, string, matcher, nested
+                type:   char_class, string, matcher, nested, mode_switch_a/b
                 value:
                 chars:
                     - string
                 child: use re2w-node-rule
                 quant: text     # quantifiers that apply to this part
                 modes:
+                
 
 ab[12\\w]?  |  cd\dee* (?i: (?:  ss | [g-m]+ tt) uu){5,}[34]
 
@@ -168,6 +190,16 @@ ab[12\\w]?  |  cd\dee* (?i: (?:  ss | [g-m]+ tt) uu){5,}[34]
 X  #
 )  #
 
+    # The slippery slope: parentheses enclosing sequences
+    # 
+    #  'abc'    'def'    (p      digits      dots      q)    x    y    z
+    #  'abc' or 'def', or p then digits then dots then q, or x or y or z
+    
+    
+    #  'abc' or 'def' or (p then digits then q) or x or y or z
+
+
+
 =cut
 
 # token_sub_types, mostly for left parenthesis
@@ -198,6 +230,14 @@ my $MODE_L  = 1024;
 my $MODE_U  = 2048;
 my $MODE_D  = 4096;
 my $MODE_ALL = ($MODE_D * 2 ) -1;
+
+
+my $EMBEDDED_MODES_ONLY = 1;
+my $ALL_MODES_ALLOWED   = 0;
+
+my $FORCE_CASE_OFF         = 0;
+my $FORCE_CASE_SENSITIVE   = 1;
+my $FORCE_CASE_INSENSITIVE = 2;
 
 my %char_names = (
     # Name for some common non-printable characters, and backslash
@@ -253,6 +293,7 @@ my @test_regex;
 # -------------------------------
 BEGIN { # Naked block for tokeniser
     my $re  = '';
+    my $line = 0;
     
     my $capture_count = 0;
     
@@ -280,8 +321,9 @@ BEGIN { # Naked block for tokeniser
     # -------------------------------
     sub init_tokeniser{
        ($re) = @_;
-       pos($re) = 0;
+       pos($re)       = 0;
        $capture_count = 0;
+       $line          = 0;
     }
     # -------------------------------
     sub escaped_common {
@@ -427,6 +469,13 @@ BEGIN { # Naked block for tokeniser
         #
         # Hard to cope with variable interpolation if the regex terminator
         # is something like } which is legal within a variable name.
+        #
+        # Perl is notoriously hard to parse, even if the regex terminator causes
+        # no problems. A construct such as $a{3} is ambiguous: it might be the
+        # interpolation of the scalar variable $a with a quantifier of 3, or the
+        # interpolation of the element with key 3 of the hash %a. Similar
+        # problems apply for $a[4567]: is it an array reference or a scalar
+        # followed by a character class?
         
         my ($free_spacing, $in_class) = @_;
         my ($token_type, $token, $tk_comment, $tk_sub_type,
@@ -662,7 +711,7 @@ sub apply_modes {
       - an existing modes bit vector (as an integer)
       - a mode flags string
       - an indicator which is false if all modes allowed, true to only allow
-        those that can be used in embedded mode-changers.
+        those that can be used in embedded mode-changers. 
     Returns the vector, with bits cleared for any mode that follows a dash and
     set for any mode present that does not. Other mode bits are unchanged.
     Calls error if unrecognised mode flag supplied.
@@ -744,7 +793,10 @@ sub tre_to_wre {
     my ($old_regex, $mode_flags) = @_;
     $mode_flags = $mode_flags || '';
     my $default_modes_bits = 0;   # Default no modes on
-    my $updated_mode_bits = apply_modes($default_modes_bits, $mode_flags, 0);
+    my $updated_mode_bits = apply_modes($default_modes_bits,
+                                        $mode_flags,
+                                        $ALL_MODES_ALLOWED 
+                                        );
     $generated_wre = '';
     $regex_struct_ref = {type=> 'root', child => []};
     my $root_ref = $regex_struct_ref->{child};    
@@ -752,7 +804,7 @@ sub tre_to_wre {
     analyse_regex($root_ref, $updated_mode_bits);
     combine_strings($regex_struct_ref);
     analyse_alts($regex_struct_ref);
-    generate_reword($regex_struct_ref, 0);
+    generate_wre($regex_struct_ref, 0);
     return $generated_wre;
 }
 
@@ -890,7 +942,7 @@ sub quants {
 
 # -------------------------------
 # -------------------------------
-{ # naked block for generate_reword and friends
+{ # naked block for generate_wre and friends
 
     my $line = '';
     my $comment = '';
@@ -952,6 +1004,8 @@ sub generate_non_captures {
     my $sp = ' ';   # Single space
     if ($sub_type eq $TKST_MODE_SPAN) {
         # Translate mode info into words
+        # i-mode is the only one that generates stuff in the wre:
+        # x- s- and m-modes are handled when parsing
         my $modes = $entry_ref->{options};
         if ($modes =~ / .* [-] .* [i] /x) {
             return 'case-sensitive ';
@@ -987,7 +1041,8 @@ sub generate_stuff_from_entry {
     # matcher     text name
     # comment     append to comment
 
-    # mode-switch nothing generated - should not be passed here
+    # mode-switch-a: nothing generated here??
+    # mode-switch-b: nothing generated ??
     # nested - shouldn't get here
     
     my $entry_type = $entry_ref->{type};
@@ -1029,6 +1084,10 @@ sub generate_stuff_from_entry {
         $line .= $value . $sp;
     } elsif ($entry_type eq 'comment') {
         $comment .= $entry_ref->{comment} . $sp;
+    } elsif ($entry_type eq 'mode_switch_a') {
+        # No action
+    } elsif ($entry_type eq 'mode_switch_b') {
+        # No action
     } else {
         _error("Internal error: generate_stuff type: $entry_type");
     }
@@ -1081,7 +1140,7 @@ sub generate_stuff_from_entry {
                 emit line if this alt all on one line
 =cut    
 # -------------------------------
-    sub generate_reword {
+    sub generate_wre {
         
         # Generates an indented regular expression
         my ($hash_ref, $indent_level, $modes_ref) = @_;
@@ -1102,8 +1161,7 @@ sub generate_stuff_from_entry {
         my $quants       = quants($hash_ref);
         # current_indent is local to this possibly recursive call
         # So it will automatically revert to the previous level
-        # when we exit - so any additional indent to cope with a
-        # non-spanning mode modifier will 
+        # when we exit 
         my $current_indent; 
         
         if ($captures && $quants) {
@@ -1150,52 +1208,137 @@ sub generate_stuff_from_entry {
             # If there is only one non-removed entry and it is not type
             # nested, we can put everything on one line
             # So we count the number of non-removed entries for this alternative
-            my $number_of_simple_entries = 0;
+            #
+            # We also check for mode_switches
+            my $number_of_simple_entries  = 0;
             my $number_of_complex_entries = 0;
-            my $all_on_one_line = 0;
+            my $number_of_switch_mode_a   = 0;
+            my $number_non_mode_switch    = 0;
+            my $mode_switch_a_is_first    = 0;
+            my $mode_switch_a_is_last     = 0;
+            my $number_of_switch_mode_b   = 0;
+            my $all_on_one_line           = 0;
+            my $leading_mode_switch_a_text = '';
+            my $mode_switch_b_text         = '';
+            
             for my $entry_ref ( @{$alt_ref} ){
                 # For each entry within this alternative
-                if      ( $entry_ref->{type} eq 'nested'  ) {
-                    $number_of_complex_entries++;
-                } elsif ( $entry_ref->{type} eq 'removed' ) {
-                    # Ignore removed entries                    
+                if ( $entry_ref->{type} eq 'mode_switch_a' ) {
+                    $number_of_switch_mode_a++;
+                    $mode_switch_a_is_last = 1;
+                    if ($number_non_mode_switch == 0) {
+                        $mode_switch_a_is_first = 1;
+                        $leading_mode_switch_a_text = _mode_text($entry_ref->{value});
+                    }
                 } else {
-                    # Anything else, as long as it doesn't have quantifiers
-                    exists $entry_ref->{quant} ? $number_of_complex_entries++ 
-                                               : $number_of_simple_entries++;
+                    # Not mode_switch_a
+                    $mode_switch_a_is_last = 0;
+                    if ( $entry_ref->{type} eq 'mode_switch_b' ) {
+                        $number_of_switch_mode_b++;
+                        $mode_switch_b_text = _mode_text($entry_ref->{value});
+                    } else {
+                        # Not mode_switch_a or mode_switch_b
+                        $number_non_mode_switch++;
+                        if      ( $entry_ref->{type} eq 'nested'        ) {
+                            $number_of_complex_entries++;
+                        } elsif ( $entry_ref->{type} eq 'removed'       ) {
+                            # Ignore removed entries
+        
+                        } else {
+                            # Anything else, as long as it doesn't have quantifiers
+                            exists $entry_ref->{quant} ? $number_of_complex_entries++ 
+                                                       : $number_of_simple_entries++;
+                        }
+                    }
                 }
             }
             if (   $number_of_simple_entries  == 1
-                && $number_of_complex_entries == 0) {
+                && $number_of_complex_entries == 0
+                &&  (   $number_of_switch_mode_a  == 0
+                     || $mode_switch_a_is_first
+                     || $mode_switch_a_is_last
+                    )
+               ) {
                 $all_on_one_line = 1;
             }
+            
+            ### [[ Mode switch implementation notes ]]
+            ### If there is a mode_switch_b element, we built text during
+            ### previous scan.
+            ### mode_switch_a can appear anywhere in any alternation.
+            ### mode_switch_b should only appear as the first element of a
+            ### second or subsequent alternation.
+            ###
+            ### mode_switch_b always applies starting at the beginning of an
+            ### alternation, although in the worst case it can be countermanded
+            ### by one or more occurences of mode_switch_a later in the same
+            ### alternation:
+            ###  / x (?i) yes | c (?-i) [def] (?i) k  /x
+            ###        ^       ^    ^          ^
+            ###        a       b    a          a
+            ###
+            ### either 
+            ###     x 
+            ###     case-insensitive 'yes'
+            ### or
+            ###     c
+            ###     case-sensitive   d e f
+            ###     case-insensitive k
+            ### We need to keep track of whether we have already actioned a
+            ### mode_switch (a or b) within an alternation, as a second or
+            ### subsequent one should terminate any indentation of the previous
+            ### one.
+            
+            
             ############### alt > 1 TRUE ### all_on_one_line TRUE ########
+            ############### and therefore there cannot be any mode_switch_a's
             if ($number_of_alternatives > 1 && $all_on_one_line) {
                 $line = ($alt_index == 0) ? 'either ' : 'or ';
+                $line .= $mode_switch_a_is_first ? $leading_mode_switch_a_text
+                                                 : $mode_switch_b_text;
                 for my $entry_ref ( @{$alt_ref} ){
                     # For each entry within this alternative
                     generate_stuff_from_entry($entry_ref) if $entry_ref->{type} ne 'removed';
                 }
                 emit_line($current_indent);
             ################ alt > 1 FALSE ### all_on_one_line TRUE ########
+            ############### and therefore there cannot be any mode_switch_a's
             } elsif ($number_of_alternatives <= 1 && $all_on_one_line) {
+                $line .= $mode_switch_b_text unless $mode_switch_a_is_first;
                 for my $entry_ref ( @{$alt_ref} ){
-                    # For each entry within this alternative
+                    # For each entry within this (the only) alternative
                     generate_stuff_from_entry($entry_ref) if $entry_ref->{type} ne 'removed';
                 }
                 emit_line($current_indent);
             ############### alt > 1 TRUE ### all_on_one_line FALSE ########
             } elsif ($number_of_alternatives > 1 && ! $all_on_one_line) {
+                # This alternative needs a line of its own to introduce it,
+                # because there are multiple items below it
                 $line = ($alt_index == 0) ? 'either ' : 'or ';
-                # This either/or needs a line of its own
+                $line .= $mode_switch_b_text unless $mode_switch_a_is_first;
                 emit_line($current_indent);
                 $indent_level++;    # Move the entries over from either/or
                 $current_indent = $indent_level;
-
+                my $mode_indent = 0;
                 for my $entry_ref ( @{$alt_ref} ){
                     # For each entry within this alternative
                     if ($entry_ref->{type} eq 'nested' ) {
-                        generate_reword($entry_ref, $indent_level);
+                        ## generate_wre($entry_ref, $indent_level);
+                        generate_wre($entry_ref, $current_indent);
+                    } elsif ( $entry_ref->{type} eq 'mode_switch_a'
+                             && not $mode_switch_a_is_last) {
+                        # mode switch within an entry, and it isn't the last
+                        # element within this alternative
+                        if ($mode_indent) {
+                            # Already indented from a mode_switch_b from the
+                            # preceding alternative or an earlier mode_switch_a
+                            # within the same alternative.
+                            # So outdent from that one first
+                            $current_indent--;
+                        }
+                        $line = _mode_text($entry_ref->{value});
+                        emit_line($current_indent++);
+                        $mode_indent = 1;
                     } elsif ( $entry_ref->{type} ne 'removed' ) {
                         generate_stuff_from_entry($entry_ref);
                         emit_line($current_indent);
@@ -1203,39 +1346,53 @@ sub generate_stuff_from_entry {
                 }
                 $indent_level--;    # Move back to either/or level
             ############### alt > 1 FALSE ### all_on_one_line FALSE ########
+            ## There cannot be any mode_switch_b's because there is only one
+            ## alternative
             } elsif ($number_of_alternatives <= 1 && ! $all_on_one_line) {
+                my $mode_indent = 0;
                 if ($line ne '') {
                    # We have a partial line already built, emit it
                    emit_line($current_indent);
                    $current_indent = $indent_level; 
                 }
                 for my $entry_ref ( @{$alt_ref} ){
-                    # For each entry within this alternative
+                    # For each entry within this (the only) alternative
                     if ($entry_ref->{type} eq 'nested' ) {
-                        generate_reword($entry_ref, $indent_level);
+                        ## generate_wre($entry_ref, $indent_level);
+                        generate_wre($entry_ref, $current_indent);
                     } elsif ( $entry_ref->{type} eq 'removed' ) {
-                        # Ignore removed entries                    
+                        # Ignore removed entries
+                    } elsif ( $entry_ref->{type} eq 'mode_switch_a' ) {
+                        # mode switch within an entry
+                        if ($mode_indent) {
+                            # Already indented from a mode_switch_b
+                            # So outdent from that one first
+                            $current_indent--;
+                        }
+                        $line = _mode_text($entry_ref->{value});
+                        emit_line($current_indent++);
+                        $mode_indent = 1;                        
                     } else {
                         # Anything else
                         generate_stuff_from_entry($entry_ref);
                         emit_line($current_indent);
-                        $current_indent = $indent_level;                        
+                        ## $current_indent = $indent_level;   ### ???????
                     }
                 }
             }
             $current_indent = $indent_level;
         }
     }
-} # End naked block for generate_reword and friends
+} # End naked block for generate_wre and friends
 
     
 # Mode-modifiers within Alternations
 # ----------------------------------
 #
-# Just adding an extra level of indent won't work, as the outdent
+# Just adding an extra level of indent would not work, as the outdent
 # to get back for the 'or' will terminate the mode incorrectly.
 #
-#    (?: a (?:i) b | c ) d
+#    (?: a (?i) b | c ) d
 #
 #   either
 #       a
@@ -1245,7 +1402,7 @@ sub generate_stuff_from_entry {
 #       c
 #   d
 #
-#  Output should be:
+#  Output has to be:
 #   either
 #       a
 #       case-insensitive
@@ -1255,50 +1412,31 @@ sub generate_stuff_from_entry {
 #           c
 #   d
 
-# One option is a real hack: a mode-switch that is not indentation
-# limited, but is explicitly turned on and off. This might be tolerable
-# if non-spanning mode modifiers are rarely used, and even more rarely
-# within an alternation.
-#
-# This mode-switch would not be intended to be written as part of new indented
-# regexes: the risk is that if they are commonly seen by people analysing old
-# regexes they will just deploy the generated indented regex complete with hack
-# and/or be led into bad habits when writing new indented regexes.
-#
-# I think the problem only applies to a single level of either/or's, and only if
-# the mode-modifier is not the first thing in the first alternative.
-#
-# A short-term option would be to detect the situation and have the analyser
-# flag the situation as 'unimplemented'.
-#
-# A tidier solution would be to generate the mode-changing indent as needed
-# immediately for the mode switch, and also create the same indent for
-# subsequent alternatives
     
-    
-    
+    # Slippery slope: parentheses in wordies
     #  (?: abc | def | p \d+ q | [xyz] )
     #  'abc' 'def' (p digits q) x y z
     #  'abc' or 'def' or (p then digits then q) or x or y or z
 
     
-   
-    #  (?: abc | def | p [\d.]+ q | [xyz] )
     
-    
-    # The slippery slope: parentheses enclosing sequences
-    # 
-    #  'abc'    'def'    (p      digits      dots      q)    x    y    z
-    #  'abc' or 'def', or p then digits then dots then q, or x or y or z
-    
-    
-    #  'abc' or 'def' or (p then digits then q) or x or y or z
+
     
 
 # -------------------------------
 sub _error {
     my ($text) = @_;
-    print "Error: $text\n";
+    print STDERR "Error: $text\n";
+}
+
+# -------------------------------
+sub _mode_text {
+    # Passed a force-case value ($FORCE_CASE_SENSITIVE or $FORCE_CASE_INSENSITIVE)
+    # Returns the text to go into the wre
+    my ($force_case_value) = @_;
+    return $force_case_value == $FORCE_CASE_SENSITIVE 
+                                        ? 'case_sensitive '
+                                        : 'case_insensitive ';
 }
 # -------------------------------
 sub is_combinable_string {
@@ -1431,9 +1569,7 @@ sub analyse_alts {
     # So if the alternation is:
     #       (?: cat | dog | [p-t\t\d] | \w )
     # then each of the alternations qualifies. The generated line will be:
-    #       'cat'  or  'dog'  or  p thru t  or  tab  or  digit  # verbose
-    #       'cat', 'dog', p thru t, tab or digit                # medium
-    #       'cat' 'dog' p-t tab digit                           # terse
+    #       'cat' 'dog' p-t tab digit word-ch
 
     my ($hash_ref) = @_;
     my $child_ref = $hash_ref->{child};
@@ -1502,6 +1638,15 @@ sub analyse_regex {
     my $x_mode   = $mode_bits & $MODE_X;
     my $IN_CLASS = 1;
     my $OUTSIDE_CLASS = 0;
+    
+    my $force_case    = 0;  # Set when lexical case-sensitivity mode change
+                            # applies, e.g. from (?i) or (?-i) until the end of
+                            # the current sub-expression or until there is
+                            # another lexical mode change. Not passed through to
+                            # nested elements
+    
+
+    
     my ($token_type, $token, $tk_comment, $tk_sub_type,
         $tk_arg_a, $tk_arg_b);
     
@@ -1512,8 +1657,8 @@ sub analyse_regex {
                    = get_next_token($x_mode, $OUTSIDE_CLASS);
                 
         if ($token_type eq 'char') {
-            $tree_ref->[$alt_ndx][$part_ndx] = {type  => 'string',
-                                                value => $token,
+            $tree_ref->[$alt_ndx][$part_ndx] = {type    => 'string',
+                                                value   => $token,
                                                 comment => $tk_comment,
                                                };
             $part_ndx++;
@@ -1608,6 +1753,17 @@ sub analyse_regex {
             # Vertical bar: another alternative starting
             $alt_ndx++;
             $part_ndx = 0;
+            
+            if ($force_case != $FORCE_CASE_OFF) {
+                # A (?i) or (?-i) in an earlier alternative is still in effect,
+                # so create a synthetic mode_switch element to trigger indent
+                $tree_ref->[$alt_ndx][$part_ndx] = {type    => 'mode_switch_b',
+                                                    value   => $force_case,
+                                                    comment => $tk_comment,
+                                                   };
+                $part_ndx++;
+            }
+            
         } elsif ($token_type eq 'paren_start') {
             # Left parenthesis, possibly plus some other goodies
             $tree_ref->[$alt_ndx][$part_ndx] = {type     => 'nested',
@@ -1618,7 +1774,10 @@ sub analyse_regex {
                                                };
             my $nested_mode_bits = $mode_bits;
             if ($tk_sub_type eq $TKST_MODE_SPAN) {
-                $nested_mode_bits = apply_modes($mode_bits, $tk_arg_a, 1);
+                $nested_mode_bits = apply_modes($mode_bits,
+                                                $tk_arg_a,
+                                                $EMBEDDED_MODES_ONLY
+                                                );
             }
             my $reached_end = analyse_regex($tree_ref->[$alt_ndx][$part_ndx]{child},
                                             $nested_mode_bits);
@@ -1646,7 +1805,29 @@ sub analyse_regex {
         } elsif ($token_type eq 'mode_switch') {
             # Change of mode, but not a mode modifying span
             # Mode changes until end of sub-expression
-            _error('Unimplemented: mode change');
+            
+            # For s and m, just set or clear $mode_bits
+            # For x, set or clear $mode_bits and $x_mode
+            # For i, it's much messier. We set or clear the i-mode bit here,
+            # but that doesn't achieve much
+            
+            $mode_bits = apply_modes($mode_bits, $tk_arg_a, $EMBEDDED_MODES_ONLY);
+            $x_mode    = $mode_bits & $MODE_X;
+            
+            if ($tk_arg_a =~ /i/) {
+                # Turning i-mode on or off
+                my $i_mode = $mode_bits & $MODE_I;
+                $force_case = $i_mode ? $FORCE_CASE_INSENSITIVE
+                                      : $FORCE_CASE_SENSITIVE;
+                $tree_ref->[$alt_ndx][$part_ndx] = {type    => 'mode_switch_a',
+                                                    value   => $force_case,
+                                                    comment => $tk_comment,
+                                                   };
+                $part_ndx++;                  
+                ## _error('Unimplemented: lexical i-mode change (?i) or (?-i)');
+            }
+            
+            
         } elsif ($token_type eq 'end_of_regex') {
             ## Should we check for incorrect nesting?
             return 1;
@@ -1666,13 +1847,33 @@ sub analyse_regex {
 =format
 TO DO:
 
-    Back-references:
-        \1  \2 etc. to refer to the 1st, 2nd... capture group
-        Perl 5.10 allows
-            \g{name} where 'name' is the name of a capture group.
-                If more than one capture group has that name, use the leftmost.
-            \g{-1}  \g{-2} etc. to refer to the previous, 2nd previous capture group
-
+    Lexical Mode Spans
+        Modes such as (?x)  or (?-i)
+        In Perl, they "only affect the regexp inside the group the embedded modifier
+        is contained in" according to perlretut.
+        Check for exact effect in other flavours.
+            Perl: rest of sub-expression (?xsmi) (?-xsmi)
+            Java: rest of sub-expression (?xsmidu) (?-xsmidu)
+                    d = treat \n as the only line terminator
+                    u = case-insensitive match for Unicode characters
+            .NET: rest of sub-expression (?xsmin) (?-xsmin)
+                    n = plain parentheses do not capture
+            Python: entire regexp (?iLmsux), so no negation needed
+                 
+            
+            
+        One use case is capturing at the same time as changing mode:
+            ((?i)yes)
+            
+            ((?i:yes)) # does the same capture using non-capturing parentheses to set
+                       # the mode and an outer pair to do the actual capture.
+            
+            ((?i)Answer: (?-i) Yes)  # Using lexical spans
+            ((?i:Answer:) (?-i: Yes)) # Using mode-switch non-capturing parentheses
+            
+        It doesn't actually matter whether there are sensible use cases: people
+        do use them so we have to cope with them.
+        
     Protection and Case-forcing:
         These are mostly used with interpolation, but we might be given a regex
         that has been interpolated already.
@@ -1711,7 +1912,7 @@ TO DO:
         parentheses to be generated.
 
         If the conventional regex is going to be obtained by calling a function
-        that has the ire embedded, then that function could be passed the
+        that has the wre embedded, then that function could be passed the
         value(s) to be interpolated. The function can manage the handling of
         meta-characters if necessary: plain protection (\Q \E) will work for
         single characters and sinple sequences but won't work if a sequence has
@@ -1810,8 +2011,6 @@ MODES
             then it's not appropriate to generate this, but we should accept it
             in conventional regex input
 
-\R          matches a generic linebreak, that is, vertical whitespace, plus the
-            multi-character sequence "\x0D\x0A".
 
 
 [[:name:]]  Posix character classes
@@ -1929,10 +2128,15 @@ can keep track of those and put the appropriate things into the tree.
 
 x affects the parsing, but not the meaning of the regex.
 
+(?x) is allowed as a lexical mode changer, unlike (?x: ... )
+which is a mode-modified span. It does seem to work in Perl, but not in Komodo's
+Rx Toolkit.
+
 For i, always create a nested level when see a i-mode modifier, and end it when
 the outer sub-expression ends or when we find another i-mode modifier. This may
 create some unecessary output if the original regex has some unecessary mode
-modifiers.
+modifiers (or when explicitly changing back to what would happen by default).
+But the generated wre may be clearer due to the duplication
 --------------
 qr/ abc ( qw (?i) d (?-i) e ) f  /ix;
 case-insensitive    
@@ -1941,8 +2145,33 @@ case-insensitive
         'qw'
         case-sensitive
             d
-        case-insensitive
+        case-insensitive 
             e
+    f
+    
+is probably clearer than...
+
+case-insensitive    
+    'abc'
+    capture
+        'qw'
+        case-sensitive
+            d
+        e
+    f
+
+...because the case-sensitivity switching is explicit, even though it makes the
+   wre one line longer.
+   
+   There is a case for some other tidying, possibly best be done by a post-processor,
+   that might produce:
+
+case-insensitive    
+    'abc'
+    capture
+        'qw'
+        case-sensitive     d
+        case-insensitive   e
     f
 
 Names For String and Line Endings
@@ -2025,15 +2254,64 @@ See http://www.perl.com/perl/misc/Artistic.html
 
 =cut
 
-# In-line tests. These will get moved out to separate .t files eventually,
-# but held here during initial testing.
+# In-line test generation.
+# These are not self-checking tests: they generate output that can be manually
+# verified, and that can then be added to a self-checking automated test.
+# These will get moved out to separate .t (or .tgen) files eventually,
+# but held here during initial development
+#
+# The reason for generating the tests this way is that a minor tweak to this
+# module may result in changes to many of the generated wres. This approach
+# does not avoid the need to check each result, but does provide a way of
+# regenerating the tests en masse after they have been checked.
 #
 # Probably keep the ability to test the module by running it as a program,
 # to provide an easy way of doing ad hoc tests, even when the main tests
 # have all moved into .t files
 
 sub load_tests {
+    
+    push @test_regex, ['   (?i) cd | ef  ', 'x', ""   ];
+    push @test_regex, ['   (?i: cd | ef )', 'x', ""   ];
+    push @test_regex, ['(?:(?i: cd | ef))', 'x', ""   ];
+    push @test_regex, ['(?:(?i: cd | ef)g)', 'x', ""   ];
+    push @test_regex, ['    a (?i) b | (?-i) c (\d) w       d', 'x', "Leading mode-switch end"   ];
+    push @test_regex, ['    a (?i) b | (?-i) c (\d) w  (?i) d', 'x', "Leading mode-switch end"   ];
+    push @test_regex, ['    a (?i) b | c (\d (?-i) Q)  w  (?i) d', 'x', "Nested lexical mode-switches"   ];
+    push @test_regex, ['    a (?i) b | c (\d (?-i) Q+) w  (?i) d', 'x', "Nested lexical mode-switches"   ];
+    push @test_regex, ['    a (?i) b | c (\d (?-i) Q++)w  (?i) d', 'x', "Nested lexical mode-switches"   ];
+    push @test_regex, ['    a (?i) b | c (\d) (?-i) w  (?i) d', 'x', ""   ];
+    push @test_regex, ['(?: a (?i) b | c (?-i) | p ) d', 'x', "trailing mode-switch"   ];
+    push @test_regex, ['(?: a (?i) b | c ) d', 'x', ""   ];
+    push @test_regex, ['(?: a (?i) b | c (?-i) w) d', 'x', ""   ];
+    push @test_regex, ['    a (?i) b | c (?-i) w  d', 'x', ""   ];
+    push @test_regex, ['    a (?i) b | c (?-i) w  (?i) d', 'x', ""   ];
+    
+    push @test_regex, ['\W{4} (?: a (?i) b | c ) d', 'x', ""   ];
+    push @test_regex, ['ab (?i) cd | ef', 'x', ""   ];
 
+    push @test_regex, ['   (?i) cd | ef [gh]', 'x', ""   ];
+    push @test_regex, ['ab (?i) cd (?-i) ef', 'x', ""   ];
+    push @test_regex, ['ab (?i) (cd) q (?-i) ef', 'x', ""   ];
+    push @test_regex, ['ab (?i) (cd) (?-is: p . r) q (?-i) ef', 'x', ""   ];
+    push @test_regex, ['(\d){4}h', '-x', "four\n    capture digit\nh"   ];
+    push @test_regex, ['(\d{4})h', '-x', "capture four digit\nh"   ];
+    push @test_regex, ['\d+', '-x', 'one or more digits'   ];
+    push @test_regex, ["[\x14\cG ]", '-x', 'literal x14, ctl-G, space'   ];
+    push @test_regex, ['[\x14\cG ]', '-x', ' x14, ctl-G, space char class'   ];
+    push @test_regex, ["[\cA\cB\cC\cD\cE\cF\cG\cH\cI\cJ]", '-x', 'literal ctl-a thru ctl-j'   ];
+    push @test_regex, ['[\cA\cB\cC\cD\cE\cF\cG\cH\cI\cJ]', '-x', 'ctl-a thru ctl-j'   ];    
+    push @test_regex, ["[\cK\cL\cM\cN\cO\cP\cQ\cR\cS\cT\cU\cV]", '-x', 'literal ctl-K thru ctl-V'   ];
+    push @test_regex, ['[\cK\cL\cM\cN\cO\cP\cQ\cR\cS\cT\cU\cV]', '-x', 'ctl-K thru ctl-V'   ];
+    push @test_regex, ["[\cW\cX\cY\cZ]", '-x', 'ctl-W thru ctl-Z'   ];
+    push @test_regex, ['[\cW\cX\cY\cZ]', '-x', 'literal ctl-W thru ctl-Z'   ];
+    push @test_regex, ["[\\cA\\cB\\cC\\cD\\cE\\cF\\cG\\cH\\cI\\cJ]", '-x', 'ctl-a thru ctl-j'   ];
+    push @test_regex, ["[\\cK\\cL\\cM\\cN\\cO\\cP\\cQ\\cR\\cS\\cT\\cU\\cV]", '-x', 'ctl-K thru ctl-V'   ];
+    push @test_regex, ["[\\cW\\cX\\cY\\cZ]", '-x', 'ctl-W thru ctl-Z'   ];
+    push @test_regex, ["\n?  \a", '-x', 'Embedded newline and alarm character'];
+    push @test_regex, ["   \t\t  \n?\a\x12", '-x', 'Embedded tabs, newline, hex-12'];
+    
+    
     push @test_regex, ['[\d\s]+'];
     push @test_regex, [q<21>, '-x'];
 
@@ -2186,18 +2464,15 @@ sub load_tests {
                 (\S+))                                                  # sql type (prepared-sql, cursor, etc)
                 ';
 =format
-    # Manual conversion of regexp above to ire.
-    # 
-    # Space in string means whitespaces
-    # Needs 'then' to be implemented
-    # Needs redundant 'then' at start of line to be ignored
-    #   (but it is used only for cosmetic reasons)
-    # Mostly functionally equivalent, but have added named captures which removes
-    #   the need for end-of-line comments
-    
-    sos then '--' then ws-ch 
+# Manual conversion of regexp above to ire.
+# 
+# Space in string means whitespaces
+# Mostly functionally equivalent, but have added named captures which removes
+#   the need for end-of-line comments
+space-means-wss
+    sos then '--' then ws
     'appl = '              then as application opt non-wss
-    ' host =' then ws-ch   then as host        opt non-wss
+    ' host =' then ws      then as host        opt non-wss
     ' user = '             then as user        opt non-wss
     '/ pid = '             then as pid         digits
     ' elapsed = '          then as elapsed
@@ -2218,10 +2493,10 @@ sub load_tests {
     then                        as end-day     digits             then wss
     then                        as end-time
                                                digits then : then digits then : digits then . digits
-    wss                 then as end-year    digits             then wss then opt non-newlines
+    wss                    then as end-year    digits             then wss then opt non-newlines
     'send  = '             then as send-time
                                              digits then . then digits 
-    ' sec receive = '
+    ' sec receive = '      then as receive
                                              digits then . then digits 
     ' sec send_packets = ' then as send-pkts digits 
     ' receive_packets = '  then as rcv_pkts  digits
@@ -2305,15 +2580,8 @@ sub load_tests {
     return;  ### ------------->>>>>>>>>>
     
     # Not executed
-    push @test_regex, ["[\x14\cG ]", '-x', 'literal x14, ctl-G'   ];
-    push @test_regex, ["[\cA\cB\cC\cD\cE\cF\cG\cH\cI\cJ]", '-x', 'ctl-a thru ctl-j'   ];
-    push @test_regex, ["[\cK\cL\cM\cN\cO\cP\cQ\cR\cS\cT\cU\cV]", '-x', 'ctl-K thru ctl-V'   ];
-    push @test_regex, ["[\cW\cX\cY\cZ]", '-x', 'ctl-W thru ctl-Z'   ];
-    push @test_regex, ["[\\cA\\cB\\cC\\cD\\cE\\cF\\cG\\cH\\cI\\cJ]", '-x', 'ctl-a thru ctl-j'   ];
-    push @test_regex, ["[\\cK\\cL\\cM\\cN\\cO\\cP\\cQ\\cR\\cS\\cT\\cU\\cV]", '-x', 'ctl-K thru ctl-V'   ];
-    push @test_regex, ["[\\cW\\cX\\cY\\cZ]", '-x', 'ctl-W thru ctl-Z'   ];
-    push @test_regex, ["\n?  \a", '-x', 'Embedded newline and alarm character'];
-    push @test_regex, ["   \t\t  \n?\a\x12", '-x', 'Embedded tabs, newline, hex-12'];
+
+
 }
 
 { my $test_number;            
@@ -2345,21 +2613,6 @@ sub load_tests {
         $test_number++;
     }
 }
-
-=format
-
-==============================================================================
-
-Copyright 2010, 2011, 2012 Derek Mead. All rights reserved 
- 
-This program is free software. It comes without any warranty, to the extent
-permitted by applicable law. You can redistribute it and/or modify it
-under the same terms as Perl itself.
-
-See http://www.perl.com/perl/misc/Artistic.html
-
-==============================================================================
-=cut
 
 
 1;  # Module must end like this
