@@ -3367,6 +3367,23 @@ To Do:
         wres to be passed in via a file, embedded in source, or directly from
         a user e.g. using a web browser.
         
+        Improved error reporting, particularly in highlighting the location of
+        the error within the wre.
+
+            calls to _error():        
+                parse_chunk  26
+                _generate_regex 
+                    internal 5
+                    non-internal 1  "generic_newline is not allowed to be negated"
+                    
+                _wre_to_tre
+                     Invalid parameters passed to call 1
+                     
+                process_line 4
+                
+            So it's mostly parse_chunk and process_line that need work, and maybe
+            detect the one non-internal error earlier.
+                
     Required to support standard regex features
 
         Ranges:
@@ -3489,54 +3506,7 @@ To Do:
         Prettier output
              Getting trailing quantifiers on their own lines would be a good start
              
-        'then' keyword: allows simple sequence on a single line of a wre
-            e.g. two digits then : then two digits then opt 'am' 'pm'
-            Definition is 'indent equally, except also indent from either/or'
-            So:
-                'as hh one or two digits then : then as mm two digits'
-            becomes:
-                 as hh two digits
-                 :
-                 as mm two digits
-            
-            Note that:
-                 as time-hhmm one or two digits then : then two digits
-            becomes:
-                 as time-hhmm two digits
-                 :
-                 two digits
-            which is probably not what the user wants. They would have to write:
-                 as time-hhmm
-                    one or two digits then : then two digits
-            to capture the hh:mm value in a single capture.
-            
 
-            'then' interacts wth either/or, as it binds more tightly
-                either two a then b
-                or     c then three d
-                four e
-            is equivalent to:
-                either
-                   two a
-                   b
-                or
-                   c
-                   three d
-                four e
-            
-            Any line with a 'then' is not allowed anything indented from it:
-            there should be at least one matcher before the 'then'.
-                    
-            Handling:
-                First 'then':
-                    Check that some matcher(s) seen (error if not)
-                    
-                    Set 'then-seen'
-                    Start building second child (for matchers following the
-                      first 'then' to go into)
-                Subsequent 'then':
-                    Start building another child (for matchers following this
-                      'then' to go into)
                 
         White space:
             Tie down definition, check implementation
@@ -3835,7 +3805,57 @@ To Do:
             Laziness/greediness
             Atomic/possessive
             
+            
+    Keyword 'then' - implemented, but check whether implementation matches this description
     
+        'then' keyword: allows simple sequence on a single line of a wre
+            e.g. two digits then : then two digits then opt 'am' 'pm'
+            Definition is 'indent equally, except also indent from either/or'
+            So:
+                'as hh one or two digits then : then as mm two digits'
+            becomes:
+                 as hh two digits
+                 :
+                 as mm two digits
+            
+            Note that:
+                 as time-hhmm one or two digits then : then two digits
+            becomes:
+                 as time-hhmm two digits
+                 :
+                 two digits
+            which is probably not what the user wants. They would have to write:
+                 as time-hhmm
+                    one or two digits then : then two digits
+            to capture the hh:mm value in a single capture.
+            
+
+            'then' interacts wth either/or, as it binds more tightly
+                either two a then b
+                or     c then three d
+                four e
+            is equivalent to:
+                either
+                   two a
+                   b
+                or
+                   c
+                   three d
+                four e
+            
+            Any line with a 'then' is not allowed anything indented from it:
+            there should be at least one matcher before the 'then'.
+                    
+            Handling:
+                First 'then':
+                    Check that some matcher(s) seen (error if not)
+                    
+                    Set 'then-seen'
+                    Start building second child (for matchers following the
+                      first 'then' to go into)
+                Subsequent 'then':
+                    Start building another child (for matchers following this
+                      'then' to go into)    
         
     Named Sub-Patterns
     
@@ -3882,18 +3902,18 @@ To Do:
                 New code, complex regexes
                 Maintain existing code, simple to medium regexes
                 Maintain existing code, complex regexes
-                Convert existing code from cre to wre
+                Convert existing code from tre to wre
         
             Aims:
-                - Keep it as similar to existing cre usage as far as possible
-                - Allow the user to put the wre in the code and have the cre
+                - Keep it as similar to existing tre usage as far as possible
+                - Allow the user to put the wre in the code and have the tre
                   created invisibly behind the scenes
-                - Allow the user to use the generated cre in the code directly,
+                - Allow the user to use the generated tre in the code directly,
                   but include the wre from which it was generated as a comment
-                - Allow the user to use the generated cre in the code directly,
+                - Allow the user to use the generated tre in the code directly,
                   without the wre from which it was generated being shown
                 - Allow the user to put the wre in the code, but with the
-                  original cre visible as comment text - either in parallel with
+                  original tre visible as comment text - either in parallel with
                   the wre or as as a separate comment block
               
             Method 1: 
@@ -3928,14 +3948,14 @@ To Do:
                 in place, and creates an updated source file the user can
                 download and save.
                 
-            wre to CRE Direction:
+            wre to TRE Direction:
                 Indented regex might already have a conventional regex, e.g. the
                 wre might be present as /x comments on a conventional regex, or
                 as a comment block. The conventional regex would be ignored.
                 
-            CRE to wre Direction:
+            TRE to wre Direction:
                 Conventional regex might already have an indented  regex, e.g. the
-                cre might have the wre as /x comments. The indented regex would
+                tre might have the wre as /x comments. The indented regex would
                 be ignored.
         
         Unicode approach
@@ -3964,9 +3984,9 @@ To Do:
             - Should we allow sub-modes: e.g. ascii digits but full unicode
               letters? Otherwise have to use explicit range 0-9 for ascii when
               in full unicode mode.
-              Answer: 'digits' always means ascii digits: use 'numeric' or
+              Answer: 'digits' always means ascii digits: use 'numeral' or
                       'numeric-character' to include non-ascii digits when in
-                      full unicode mode.
+                      full unicode mode, or use 'unicode-digit' anywhere.
               
             ..............
             - if you don't specify, the behaviour is defined, but might vary
@@ -3984,7 +4004,8 @@ To Do:
             - ASCII is available as an option, if you want to be sure that, for
               example, a non-ASCII letter won't match 'letter'. There could even
               an option to specify 'any means ascii', so that a non-ASCII
-              character won't match anything except a negated character.
+              character won't match anything except a negated character. Or just
+              use the keyword 'ascii-character' instead of 'character'.
             - Possible extension to limit entire character set, e.g. to ASCII,
               or 7-bit ASCII, or ASCII excluding non-whitespace control
               characters. If applied, this would result in regexes never
@@ -6158,21 +6179,69 @@ Macro Types
             of reformatted fields or sub-fields.
         'As' and 'to' and 'in' and 'into' are ambiguous - they could mean the
         name under which to store the captured/reformatted data, or the format.
-        There may also be situations where both storage-name and reformatting
-        are required - and two storage-names may be needed, one for raw
-        captured data and one for reformatted.
+        That doesn't preclude using them, but it may be a cause of user errors.
+        There may be situations where both storage-name and reformatting are
+        required - and two storage-names may be needed, one for raw captured
+        data and one for reformatted.
         
-        Some data may match the regex pattern but be invalid, e.g. 31/02/2011.
-        The interface should provide consistent behaviour regardless of whether
-        the data doesn't match or matches but is invalid: a single check should
-        cover both situations.
         
-        match_all() and match_part() are the recommended interface. match() is
-        provided and does match_part(), but if the pattern starts with
-        start-of-string and ends with end-of-string then match() effectively
-        does match_all().
+        Strict vs. Liberal
+        
+            Liberal formats attempt to allow any unambiguous representation of
+            the data, at least within normal variations.
+            
+            So a liberal d/m/yyyy date match would allow dash or slash as a separator,
+            and one or two digits for day and month, and two or four for year.
+            
+                00 to 30:  add 2000
+                31 to 99:  add 1900
+                otherwise: add nothing (already validated to be 1900 to 2099)
+            
+            
+            A liberal dd/mmm/yy format would allow month names or numbers. It
+            would only match if the month is valid, so month will be
+            
+                if ($data =~ wre q"capture d/m/y") {
+                    # Date matches, fix up two-digit years
+                    $year = $+{year} +=  $+{year} < 31  ? 2000 :
+                                         $+{year} < 100 ? 1900 : 0;
+                    # Convert month                                         
+                    $month = $month_number{lc $+{month}} || $+{month}; 
+                    $day   = $+{day};
+                } else {
+                    # Not an acceptable date
+                }
+            Strict formats only match if the data exactly conforms. So d/m/yyyy would
+            not allow leadng zeros on day or month, would require four digits
+            for the year, and would require the separators to be slashes.
+            
+            
+            d/m/y
+            dd/mm/yy
+            dd/mm/yyyy
+            
+            Strict vs. liberal is likely to apply to an entire regex
+            
+        Plain match vs. Capture vs. Reformat
+        
+        Plain match just reports whether the regex matches, returning no data.
+        
+        
+        Some data may match the regex pattern but be invalid, e.g. 29/02/2011.
+        The hardest cases would ones such as 29/02/2000: the regex or validation
+        code would have to embed the rules for leap years (divisible by 400, or
+        divisible by 4 unless also divisible by 100). The interface should provide
+        consistent behaviour regardless of whether the data doesn't match or
+        matches but is invalid: a single check should cover both situations.
+        
+        match_all() and match_part() or find() are the recommended interface.
+        match() is provided and does match_part(), but if the pattern starts
+        with start-of-string and ends with end-of-string then match()
+        effectively does match_all().
         
         - Boolean: whether the data matches the macro type.
+          Multiple captures:
+            - one that contains the raw input for 
         - Capture string only: captures the raw data if it matched, otherwise
           undef.
         - Reformatted value only: gets a single reformatted value if it
@@ -6180,6 +6249,7 @@ Macro Types
           to one that returns captured text? Or just different keyword, e.g.
           'return' instead of 'capture'?
         - Reformatted sub-values: gets array of reformatted sub-values.
+          Sub-values might be the separate day, month and year parts of a date.
           A different function or method to one that returns captured text?
         - Reformatted values or sub-values via named results. Captured
           characters, reformatted values and sub-values all available via
@@ -6197,8 +6267,53 @@ Macro Types
                 $+{date_sold}
                 $+{date_sold_ddmmyyyy}
     
-    
-    
+        There is a balance in what should attempted by a regex: the ideal is
+        that the regex does what regexes do well, leaving more complex
+        processing to its user but providing the user with pre-parsed input.
+        So a generalised date handler might match dates in various formats,
+        including allowing month numbers or names. It could return the month as
+        a single digit, two digits as month_number or mm, or the first three letters
+        of its name (with variants such a Jan, jan and JAN all allowed) as
+        month_name or mmm. Code that handles a matched date could assume that
+        either mm or mmm (but not both) will be populated, and that a populated
+        field will meet validation rules. Similarly, if two and four digit years
+        are allowed, yy or yyyy would be populated. There would be a guarantee
+        that day numbers would be between 1 and 31, but not that they were valid
+        for their month. The exception might be for strictly-formatted dates
+        such as yyyy-mm-dd (and possibly d/m/yyyy or m/d/yyyy) 
+        
+            ( 19 | 20 (?: [02468][048] | [13579][26] )
+            
+            Correctly predicts leap years for dates from 1901 to 2099.
+            It incorrectly matches 1900, which was not a leap year.
+            
+            ( 1[6-9] | 2[0-4] (?: (?: [02468][048] ) | (?: [13579][26]) )
+            Is almost correct for dates from 1601 to 2499: it incorrectly
+            allows 29th February in 1700, 1800, 1900, 2100, 2200 and 2300.
+            
+            1900 not a leap year (divisible by 100 but not by 400)
+            2000 is  a leap year (divisible by 400)
+            2100 not a leap year (divisible by 100 but not by 400)
+            
+        <Leap year> then 02 01-29 or 04|06|09|11 01-30 or 01|03|05|07|08|10|12
+        30 days hath September, April, June and November
+                      9           4     6        11
+        dmy 29 / 02 / <leap year>
+            31 / 04|06|09|11 / <any year>
+            30|29 / 01|03-12 / <any year>
+            01-28 / 01-12    / <any year>
+        
+        
+        (?<yyyy> 19 | 20 (?: [02468][048]  | [13579][26] ) )
+        
+        mdy 02          / 29    / <leap year>
+            04|06|09|11 / 31    / <any year>
+            01|03-12    / 30|29 / <any year>
+            01-12       / 01-28 / <any year>
+        
+                          
+                      
+                      
 Use Cases for regular expressions
     User input validation
     
