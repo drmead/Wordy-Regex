@@ -483,8 +483,11 @@ BEGIN { # Naked block for tokeniser
                = ('', '', '', '', '', '');
         my ($char);
         
+        if ($in_class) {
+            $free_spacing = 0;  # Free-spacing never applies inside a character class
+        }
         # Skip leading white space 
-        if ($free_spacing && ! $in_class) {
+        if ($free_spacing) {
             $re =~ / \G \s+ /xgc ;  
         }
         # Grab a leading comment
@@ -525,6 +528,15 @@ BEGIN { # Naked block for tokeniser
             # would start with a letter, digit or underscore
             $token_type = 'group';
             $token      = 'end_of_something';
+        } elsif ( $in_class && $re =~ / \G [[] :
+                ( \^? )
+                (   alpha | alnum | ascii | cntrl | digit  | graph | lower |
+                    print | punct | space | upper | xdigit | word  | blank   )
+                                                  : []] /xgc ) {
+            # POSIX character within character class
+            $token_type = 'group';
+            $token      = $1 eq '' ? "posix-$2" : "non-posix-$2";
+            
         } elsif ( ! $in_class && $re =~ / \G [[]  /xgc ) {
             # Left bracket (not meta within char class)
             $token_type = 'left_bracket';
@@ -900,7 +912,12 @@ sub quants {
         my $min = $entry_ref->{quant}{min};
         my $max = $entry_ref->{quant}{max};
         my $mod = $entry_ref->{quant}{mod} || '';
-        if ($min == 0) {
+        if (! defined $min) {
+            my $pause = 1;
+        } elsif ($min eq '') {
+            my $pause = 2;
+        }
+        if ($min eq '' || $min == 0) {
             my $GENERATE_ZERO_QUANT = 1;
             if ($GENERATE_ZERO_QUANT) {
                 if ($max eq 'more') {
@@ -1225,7 +1242,7 @@ sub generate_stuff_from_entry {
                 # For each entry within this alternative
                 if ( $entry_ref->{type} eq 'mode_switch_a' ) {
                     $number_of_switch_mode_a++;
-                    $mode_switch_a_is_last = 1;
+                    $mode_switch_a_is_last = 1; # Gets turned off if not really last
                     if ($number_non_mode_switch == 0) {
                         $mode_switch_a_is_first = 1;
                         $leading_mode_switch_a_text = _mode_text($entry_ref->{value});
@@ -1262,34 +1279,6 @@ sub generate_stuff_from_entry {
                 $all_on_one_line = 1;
             }
             
-            ### [[ Mode switch implementation notes ]]
-            ### If there is a mode_switch_b element, we built text during
-            ### previous scan.
-            ### mode_switch_a can appear anywhere in any alternation.
-            ### mode_switch_b should only appear as the first element of a
-            ### second or subsequent alternation.
-            ###
-            ### mode_switch_b always applies starting at the beginning of an
-            ### alternation, although in the worst case it can be countermanded
-            ### by one or more occurences of mode_switch_a later in the same
-            ### alternation:
-            ###  / x (?i) yes | c (?-i) [def] (?i) k  /x
-            ###        ^       ^    ^          ^
-            ###        a       b    a          a
-            ###
-            ### either 
-            ###     x 
-            ###     case-insensitive 'yes'
-            ### or
-            ###     c
-            ###     case-sensitive   d e f
-            ###     case-insensitive k
-            ### We need to keep track of whether we have already actioned a
-            ### mode_switch (a or b) within an alternation, as a second or
-            ### subsequent one should terminate any indentation of the previous
-            ### one.
-            
-            
             ############### alt > 1 TRUE ### all_on_one_line TRUE ########
             ############### and therefore there cannot be any mode_switch_a's
             if ($number_of_alternatives > 1 && $all_on_one_line) {
@@ -1302,7 +1291,7 @@ sub generate_stuff_from_entry {
                 }
                 emit_line($current_indent);
             ################ alt > 1 FALSE ### all_on_one_line TRUE ########
-            ############### and therefore there cannot be any mode_switch_a's
+            ################ and therefore there cannot be any mode_switch_a's
             } elsif ($number_of_alternatives <= 1 && $all_on_one_line) {
                 $line .= $mode_switch_b_text unless $mode_switch_a_is_first;
                 for my $entry_ref ( @{$alt_ref} ){
@@ -1791,9 +1780,16 @@ sub analyse_regex {
             # Quantifier - applies to previous part
             if ($part_ndx == 0) {
                 _error("quantifier $token has nothing to quantify");
+            } elsif (exists $tree_ref->[$alt_ndx][$part_ndx - 1]{quant}) {
+                my $previous_quant = $tree_ref->[$alt_ndx][$part_ndx - 1]{quant}{token};
+                _error("quantifier: $token follows another quantifier: $previous_quant");
             } else {
                 $tree_ref->[$alt_ndx][$part_ndx - 1]{quant}
-                    = {min => $tk_arg_a, max => $tk_arg_b, mod => $tk_sub_type};
+                    = {min   => $tk_arg_a,
+                       max   => $tk_arg_b,
+                       mod   => $tk_sub_type,
+                       token => $token
+                       };
             }
           
         } elsif ($token_type eq 'group') {
@@ -1847,32 +1843,7 @@ sub analyse_regex {
 =format
 TO DO:
 
-    Lexical Mode Spans
-        Modes such as (?x)  or (?-i)
-        In Perl, they "only affect the regexp inside the group the embedded modifier
-        is contained in" according to perlretut.
-        Check for exact effect in other flavours.
-            Perl: rest of sub-expression (?xsmi) (?-xsmi)
-            Java: rest of sub-expression (?xsmidu) (?-xsmidu)
-                    d = treat \n as the only line terminator
-                    u = case-insensitive match for Unicode characters
-            .NET: rest of sub-expression (?xsmin) (?-xsmin)
-                    n = plain parentheses do not capture
-            Python: entire regexp (?iLmsux), so no negation needed
-                 
-            
-            
-        One use case is capturing at the same time as changing mode:
-            ((?i)yes)
-            
-            ((?i:yes)) # does the same capture using non-capturing parentheses to set
-                       # the mode and an outer pair to do the actual capture.
-            
-            ((?i)Answer: (?-i) Yes)  # Using lexical spans
-            ((?i:Answer:) (?-i: Yes)) # Using mode-switch non-capturing parentheses
-            
-        It doesn't actually matter whether there are sensible use cases: people
-        do use them so we have to cope with them.
+
         
     Protection and Case-forcing:
         These are mostly used with interpolation, but we might be given a regex
@@ -1997,7 +1968,7 @@ MODES
 
 \K          see Regexp::Keep. Probably can be handled in the same way as
             zero-width assertions: give it a keyword and generate /K when we
-            see it in an ire when we are generating conventional regex.
+            see it in an wre when we are generating conventional regex.
             
 /k          Can't find any more details. khaidoan.wikidot.com/perl-basics
             seems to think it exists as a mode.
@@ -2013,7 +1984,7 @@ MODES
 
 
 
-[[:name:]]  Posix character classes
+
 
 Named Patterns (perl 5.10+)
     Define sub-regex with (?(DEFINE) (?<name>pattern)... ) where the < and >
@@ -2041,6 +2012,19 @@ Named Patterns (perl 5.10+)
     Does it imply the need for an extra pass? Probably not in this module, as
     long as we can assume that any name used will eventally be defined (and we
     can report an error if not).
+
+    Lexical Mode Spans
+        Modes such as (?x)  or (?-i): implemented, but assuming Perl syntax
+        In Perl, they "only affect the regexp inside the group the embedded modifier
+        is contained in" according to perlretut.
+        Check for exact effect in other flavours.
+            Perl: rest of sub-expression (?xsmi) (?-xsmi)
+            Java: rest of sub-expression (?xsmidu) (?-xsmidu)
+                    d = treat \n as the only line terminator
+                    u = case-insensitive match for Unicode characters
+            .NET: rest of sub-expression (?xsmin) (?-xsmin)
+                    n = plain parentheses do not capture
+            Python: entire regexp (?iLmsux), so no negation needed
     
 Mode-Modified Spans and Regex Literals
 --------------------------------------
@@ -2132,110 +2116,69 @@ x affects the parsing, but not the meaning of the regex.
 which is a mode-modified span. It does seem to work in Perl, but not in Komodo's
 Rx Toolkit.
 
-For i, always create a nested level when see a i-mode modifier, and end it when
-the outer sub-expression ends or when we find another i-mode modifier. This may
-create some unecessary output if the original regex has some unecessary mode
-modifiers (or when explicitly changing back to what would happen by default).
-But the generated wre may be clearer due to the duplication
---------------
-qr/ abc ( qw (?i) d (?-i) e ) f  /ix;
-case-insensitive    
-    'abc'
-    capture
-        'qw'
-        case-sensitive
-            d
-        case-insensitive 
-            e
-    f
-    
-is probably clearer than...
-
-case-insensitive    
-    'abc'
-    capture
-        'qw'
-        case-sensitive
-            d
-        e
-    f
-
-...because the case-sensitivity switching is explicit, even though it makes the
-   wre one line longer.
-   
-   There is a case for some other tidying, possibly best be done by a post-processor,
-   that might produce:
-
-case-insensitive    
-    'abc'
-    capture
-        'qw'
-        case-sensitive     d
-        case-insensitive   e
-    f
 
 Names For String and Line Endings
 ---------------------------------
-
-The standard meaning of $ is:
-    'end of string, or before a string-ending newline'.
-Even that is abbreviated, as a common interpretation of 'end of string' might be:
-    'the last character in the string':
-so the full version is:
-    'after the last character in the string or before a string-ending newline'.
-But $ can actually match in two places in the same string (even without /m) if
-the string ends with a newline: both before and after the string-ending newline.
-So should we be saying:
-    'after the last character in the string *and* before a string-ending newline'?
-
-That's quite difficult to turn into a pithy keyword, or even a pithy phrase,
-especially as we want to be clear that it matches the zero-width place before a
-terminal newline rather than matching the newline itself.
-
-One option is to have long, medium, short and abbreviated versions:
- - the long version spells out the meaning in full. This isn't an option that
-   people would be expected to write, but it would be acceptable as input - it
-   is useful as a documentation/full explanation option
- - the medium version says 'end of string or almost'
- - the short version says 'eos-or-btnl' 
- - the abbreviated version is 'eosx', where the 'x' is intended to distinguish
-   it from plain eos meaning end-of-string, and to imply 'extended'
+[[[ These notes are about the design of the wordy notation - they are in this module
+    because they mostly affect terse regular expressions that are being translated
+    into wordies. ]]]
  
-Or we could redefine 'end of string' to mean 'end of string or almost', and
-use 'absolute end of string' for \z. This helps with indented regexes that have
-been converted from old-style regexes, but at the cost of forcing new
-hand-written ones to use a clumsier form, and risk that they will be written as
-'end of string' when they should have been 'absolute end of string'.
-
-Or use (say) 'string-end' or 'string-end-nl' for 'end of string or almost', so
-'end of string' can retain its face value.
+ Currently implemented in Wre.pm:
  
-Or have a 'legacy eos' mode setting, which changes 'end of string' to mean eosx:
-if you then want non-legacy end of string you have to say 'absolute end of
-string'.
-
-$ is used in a high proportion of regexes, but rarely occurs many times in the
-same regex. In an indented regex it will usually end up on a line of its own:
-a verbose name for it won't make the regex occupy more lines, although it might
-extend the width.
- 
-In /m mode, $ means 'end of string, or before any newline'. That can turn into
-'end of line', with the understanding that the end of the string counts as
-ending a line.
+    Short   Full                    Terse regex equivalent
+    sos     start-of-string         \A
+    sol     start-of-line           ^ provided /m mode is on
+    
+    eosx    almost-end-of-string    \Z ($ provided /m mode is off)
+    eos     end-of-string           \z (absolute end of string)
+    eol     end-of-line             $ provided /m mode is on
+    
+    Tre2Wre.pm has to cope with whatever is supplied in the terse regex, and allow
+    for whether /m mode is on. It generates the full versions of the words.
+    
+    Wre.pm follows the recommendations in 'Perl Best Practices' and generates
+        \A      for sos/start-of-string
+        \z      for eos/end-of-string
+        ^       with /m mode on, for sol/start-of-line
+        $       with /m mode on, for eol/end-of-line
+        \Z      for eosx/almost-end-of-string
+            
 
 One possibility is to special-case regexes that start with ^ and end with $ (and
 don't have any alternations active at that stage) as they are quite common, and
-have a 'match entire string' command. But that would still need to differentiate
-itself from a similar regex that ended with \z - so it might need a modifier so
-that you say 'match entire string legacy'.
+have a 'match-entire-string' command. But that would still need to differentiate
+itself from a similar regex that started with ^ but ended with \z - which might
+need a modifier so that you say 'match-entire-string-legacy'.
 
 If 'legacy' only affects eos/eol, then a more descriptive name for it should be
-possible. Given the design philosophy of making ire's readable by someone who
-knows only the sequence/alternation rules.
+possible. The design philosophy is that someone who knows only the sequence and
+alternation rules should correctly understand the meaning of the wordy.
 
 
-The intention for hand-written indented regexes is that they will use plain
-'end of line' or 'end of string', unless they really want a fancier version.
+
+
+[from http://search.cpan.org/~dom/perl-5.14.3/pod/perlretut.pod]
+Starting with Perl 5.10, it is possible to define named subpatterns in a section
+of the pattern so that they can be called up by name anywhere in the pattern.
+This syntactic pattern for this definition group is
+(?(DEFINE)(?<name>pattern)...). An insertion of a named pattern is written as
+(?&name).
+
+The example below illustrates this feature using the pattern for floating point
+numbers that was presented earlier on. The three subpatterns that are used more
+than once are the optional sign, the digit sequence for an integer and the
+decimal fraction. The DEFINE group at the end of the pattern contains their
+definition. Notice that the decimal fraction pattern is the first place where we
+can reuse the integer pattern.
+
+   /^ (?&osg)\ * ( (?&int)(?&dec)? | (?&dec) )
+      (?: [eE](?&osg)(?&int) )?
+    $
+    (?(DEFINE)
+      (?<osg>[-+]?)         # optional sign
+      (?<int>\d++)          # integer
+      (?<dec>\.(?&int))     # decimal fraction
+    )/x
 
 ==============================================================================
 
@@ -2263,14 +2206,33 @@ See http://www.perl.com/perl/misc/Artistic.html
 # The reason for generating the tests this way is that a minor tweak to this
 # module may result in changes to many of the generated wres. This approach
 # does not avoid the need to check each result, but does provide a way of
-# regenerating the tests en masse after they have been checked.
+# regenerating the tests en masse after they have been checked. One major
+# problem is that these tests do not specify test data, matches or captures - so
+# if they have been added manually to the tests there is a risk that they will
+# be lost. A better approach might be to have the test rig create the updated
+# test itself, retaining any data, match and capture information but updating
+# the generated wordy.
 #
 # Probably keep the ability to test the module by running it as a program,
 # to provide an easy way of doing ad hoc tests, even when the main tests
 # have all moved into .t files
 
 sub load_tests {
-    
+    push @test_regex, ['[\d[:^ascii:]]', '-x', ""   ];
+    push @test_regex, ['[\d[:ascii:]]', '-x', ""   ];
+
+    push @test_regex, [
+        '(?x-ism:(?-xism:(?:(?i)(?:[+-]?)(?:(?=[.]?[0123456789])
+         (?:[0123456789]*)(?:(?:[.])(?:[0123456789]{0,}))?)(?:(?:[
+         E])(?:(?:[+-]?)(?:[0123456789]+))|))|(?-xism:[[:upper:]][
+         [:alnum:]_]*))(?:\s*(?-xism:[-+*/%])\s*(?-xism:(?:(?i)(?:[
+         +-]?)(?:(?=[.]?[0123456789])(?:[0123456789]*)(?:(?:[.])
+         (?:[0123456789]{0,}))?)(?:(?:[E])(?:(?:[+-]?)(?:[0123456789
+         ]+))|))|(?-xism:[[:upper:]][[:alnum:]_]*)))*)
+                               ', '-x', "" ];
+    push @test_regex, ['h?{2}', '-x', ""   ];
+    push @test_regex, ['h+{2}', '-x', ""   ];
+    push @test_regex, ['h*{2}', '-x', ""   ];
     push @test_regex, ['   (?i) cd | ef  ', 'x', ""   ];
     push @test_regex, ['   (?i: cd | ef )', 'x', ""   ];
     push @test_regex, ['(?:(?i: cd | ef))', 'x', ""   ];
@@ -2286,14 +2248,13 @@ sub load_tests {
     push @test_regex, ['(?: a (?i) b | c (?-i) w) d', 'x', ""   ];
     push @test_regex, ['    a (?i) b | c (?-i) w  d', 'x', ""   ];
     push @test_regex, ['    a (?i) b | c (?-i) w  (?i) d', 'x', ""   ];
-    
     push @test_regex, ['\W{4} (?: a (?i) b | c ) d', 'x', ""   ];
     push @test_regex, ['ab (?i) cd | ef', 'x', ""   ];
-
     push @test_regex, ['   (?i) cd | ef [gh]', 'x', ""   ];
     push @test_regex, ['ab (?i) cd (?-i) ef', 'x', ""   ];
     push @test_regex, ['ab (?i) (cd) q (?-i) ef', 'x', ""   ];
     push @test_regex, ['ab (?i) (cd) (?-is: p . r) q (?-i) ef', 'x', ""   ];
+ 
     push @test_regex, ['(\d){4}h', '-x', "four\n    capture digit\nh"   ];
     push @test_regex, ['(\d{4})h', '-x', "capture four digit\nh"   ];
     push @test_regex, ['\d+', '-x', 'one or more digits'   ];
@@ -2324,6 +2285,8 @@ sub load_tests {
     push @test_regex, ['([012]?\d):([0-5]\d)(?::([0-5]\d))?(?i:\s(am|pm))?'];
     
     push @test_regex, [q/<A[^>]+?HREF\s*=\s*["']?([^'" >]+?)['"]?\s*>/, '-x'];
+    push @test_regex, [q/<A[^>]+?HREF\s*=\s*(["']?)([^'" >]+?)\1?\s*>/, '-x'];
+    
     push @test_regex, [q/^0?(\d*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*)/ ];
     push @test_regex, ['[a-g]{1,2}+' ];
     push @test_regex, ['[a-g]*+'     ];
@@ -2353,7 +2316,7 @@ sub load_tests {
     push @test_regex, [q<http://(?:(?:(?:(?:(?:[a-z]|[A-Z])|[0-9])|(?:(?:[a-z]|[A-Z])|[0-9])(?:(?:(?:[a-z]|[A-Z])|[0-9])|-)*(?:(?:[a-z]|[A-Z])|[0-9]))\.)*(?:(?:[a-z]|[A-Z])|(?:[a-z]|[A-Z])(?:(?:(?:[a-z]|[A-Z])|[0-9])|-)*(?:(?:[a-z]|[A-Z])|[0-9]))\.?|[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)(?::[0-9]*)?(?:/(?:(?:(?:(?:[a-z]|[A-Z])|[0-9])|[\-\_\.\!\~\*\'\(\)])|%(?:[0-9]|[A-Fa-f])(?:[0-9]|[A-Fa-f])|[:@&=+$,])*(?:;(?:(?:(?:(?:[a-z]|[A-Z])|[0-9])|[\-\_\.\!\~\*\'\(\)])|%(?:[0-9]|[A-Fa-f])(?:[0-9]|[A-Fa-f])|[:@&=+$,])*)*(?:/(?:(?:(?:(?:[a-z]|[A-Z])|[0-9])|[\-\_\.\!\~\*\'\(\)])|%(?:[0-9]|[A-Fa-f])(?:[0-9]|[A-Fa-f])|[:@&=+$,])*(?:;(?:(?:(?:(?:[a-z]|[A-Z])|[0-9])|[\-\_\.\!\~\*\'\(\)])|%(?:[0-9]|[A-Fa-f])(?:[0-9]|[A-Fa-f])|[:@&=+$,])*)*)*(?:\\?(?:[;/?:@&=+$,]|(?:(?:(?:[a-z]|[A-Z])|[0-9])|[\-\_\.\!\~\*\'\(\)])|%(?:[0-9]|[A-Fa-f])(?:[0-9]|[A-Fa-f]))*)?)?>, '-x'];
     push @test_regex, [q<http://(?::?[a-zA-Z0-9](?:[a-zA-Z0-9\-]*[a-zA-Z0-9])?\.[a-zA-Z]*(?:[a-zA-Z0-9\-]*[a-zA-Z0-9])?\.?|[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)(?::[0-9]*)?(?:/(?:(?:(?:[a-zA-Z0-9\-\_\.\!\~\*\'\x28\x29]|%[0-9A-Fa-f][0-9A-Fa-f])|[:@&=+$,]))*(?:;(?:(?:(?:[a-zA-Z0-9\-\_\.\!\~\*\'\x28\x29]|%[0-9A-Fa-f][0-9A-Fa-f])|[:@&=+$,]))*)*(?:/(?:(?:(?:[a-zA-Z0-9\-\_\.\!\~\*\'\x28\x29]|%[0-9A-Fa-f][0-9A-Fa-f])|[:@&=+$,]))*(?:;(?:(?:(?:[a-zA-Z0-9\-\_\.\!\~\*\'\x28\x29]|%[0-9A-Fa-f][0-9A-Fa-f])|[:@&=+$,]))*)*)*(?:\\?(?:(?:[;/?:@&=+$,a-zA-Z0-9\-\_\.\!\~\*\'\x28\x29]|%[0-9A-Fa-f][0-9A-Fa-f]))*)?)?>, '-x'];
     
-    push @test_regex, [q/<A[^>]+?HREF\s*=\s*["']?([^'" >]+?)['"]?\s*>/, '-x'];
+
     push @test_regex, ['(.)\g1', '-x'];
     push @test_regex, ['(.)\1', '-x'];
     push @test_regex, ['(.)\g{-1}', '-x'];

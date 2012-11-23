@@ -304,6 +304,7 @@ my $LT_RANGE    = 'range';      # A range *token* such as 4-7 or b-j. The parser
                                 # which are split by the tokeniser
 my $LT_ASSERTION  = 'matcher';  # The name of a zero-width matcher, such as end-of-line
 my $LT_BACKREF    = 'backref';  # A back-reference
+my $LT_POSIX      = 'posix';    # A POSIX character class
 
 my %LIT_TYPE_SINGLE_CHAR =
          ($LT_CHAR => 1, $LT_CONTROL => 1, $LT_HEX => 1,$LT_OCTAL => 1);
@@ -423,6 +424,7 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
                     uppercase_letter   => 'uc_letter'            ,
                     upper_case_letter  => 'uc_letter'            ,
                     word_char          => 'word_ch'              ,
+                    word_character     => 'word_ch'              ,
                     ws                 => 'whitespace'           ,
                     );
     
@@ -485,6 +487,8 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
                         wss         => 'whitespace',
                         wordchs     => 'wordch',
                         wordchars   => 'wordch',
+                        wordcharacters
+                                    => 'wordch',
                         genericnewlines
                                     => 'genericnewline',
                                     
@@ -1158,7 +1162,8 @@ sub flag_value {
             $token_type = $TT_LITERAL;
             $literal_type = $LT_BACKREF;
             $token = $backref_name;
-            
+
+                        
         } elsif ($line =~ / \G ( [a-z] [-_a-z0-9]*? [a-z0-9] )
                                ( \s | $       ) /xgci) {
             # 'word' - something starting and ending with a letter, containing
@@ -1246,6 +1251,19 @@ sub flag_value {
                         $token_type = $TT_LITERAL;
                         $literal_type = $LT_CONTROL;
                         $token = '\\c' . uc($control_letter);
+                    } elsif ( my ($posix_class) = $word_converted
+                           =~ / \A (?: posix )
+                                # hyphens & underscores deleted  [-_]
+                                (  alpha | alnum | ascii | cntrl | digit  | graph | lower |
+                                   print | punct | space | upper | xdigit | word  | blank    )
+                                \z /x) {
+                        # posix-<word> or non-posix-<word>
+                        $token_type = $TT_LITERAL;
+                        $literal_type = $LT_POSIX;
+                        $token = '[:'
+                                . ($word_is_negated ? '^' : '')
+                                . $posix_class
+                                . ':]';
                     } else {
                         # token is the normalised word itself
                         $token = $word_converted;
@@ -2046,6 +2064,7 @@ sub _generate_regex {
                                 #           or some groups such as letter [A-Za-z] \p{L} \p{Letter}
                                 #                            or lc-letter [a-z]    \p{Ll} \p{LowercaseLetter}
                                 #                            or uc-letter [A-Z]    \p{Lu} \p{UppercaseLetter}
+                                #           or POSIX character class
                                 
         my $SINGULAR = 0;
         my $PLURAL   = 1;
@@ -2145,7 +2164,11 @@ sub _generate_regex {
             } elsif ($lit_type eq $LT_RANGE) {
                 $char_control[$sing_or_plural] = 99;
                 $chars[$sing_or_plural] .= $lit_val;
-                                                                                                  
+                
+            } elsif ($lit_type eq $LT_POSIX) {
+                $char_control[$sing_or_plural] = 99;
+                $chars[$sing_or_plural] .= $lit_val;
+                
             } elsif ($lit_type eq $LT_GROUP)  {
                 if ($lit_val eq 'digit') {
                     $single_char[$sing_or_plural] = ($lit_negated || $overall_negated) ? "\\D" : "\\d";
