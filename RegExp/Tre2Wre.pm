@@ -21,7 +21,17 @@ This is a development version of the module, with integrated tests
 
 TO DO:
 
+An extra right parenthesis stops processing: remainder of terse regex is ignored
+
+
+
 Error Handling:
+
+    The current design is intended to be given a valid regex - the assumption
+    is that whatever engine the regex was designed for will report any errors.
+    
+    Currently outputs error text as part of generated wordy.
+    Could also:
     - Keep track of line number and column position (in get_next_token?)
     - Report line/col with error message
     - Indicate position by graphic e.g.
@@ -232,12 +242,19 @@ my $MODE_D  = 4096;
 my $MODE_ALL = ($MODE_D * 2 ) -1;
 
 
-my $EMBEDDED_MODES_ONLY = 1;
-my $ALL_MODES_ALLOWED   = 0;
+my $LEXICAL_MODES  = 2;
+my $SPANNING_MODES = 1;
+my $ALL_MODES      = 0;
 
-my $FORCE_CASE_OFF         = 0;
-my $FORCE_CASE_SENSITIVE   = 1;
-my $FORCE_CASE_INSENSITIVE = 2;
+# Force mode constants, used during lexical mode-change handling
+# Other modes allowed (d, u, a, aa, l and p) can only be turned on, so they
+# use their normal mode bits.
+my $FORCE_MODE_NONE        = 0;
+my $FORCE_CASE_INSENSITIVE = $MODE_I; # 
+my $FORCE_CASE_SENSITIVE   = $MODE_G; # Re-use mode G to mean turn /i mode off,
+                                      # ensures no clashes
+
+
 
 my %char_names = (
     # Name for some common non-printable characters, and backslash
@@ -602,8 +619,8 @@ BEGIN { # Naked block for tokeniser
                 my $mod = $1;
                 $tk_sub_type = $mod eq '?' ? $TKST_NON_GREEDY : $TKST_ATOMIC;
             }
-        } elsif ( ! $in_class && $re =~ / \G [(] [?] ( [-imsx]+ ) [)] /xgc ) {
-            # A non-spanning mode-modifier  (?imsx-imsx)
+        } elsif ( ! $in_class && $re =~ / \G [(] \s* [?] ( [-imsxdualp]+ ) [)] /xgc ) {
+            # A non-spanning mode-modifier  (?imsxdualp-imsx)
             my $modes = $1;
             $token_type = 'mode_switch';
             $token = $modes;
@@ -656,8 +673,8 @@ BEGIN { # Naked block for tokeniser
                 if (      $re =~ / \G :            /xgc ) {
                     #   Group-only (?: ... )
                     $tk_sub_type = $TKST_GROUP_ONLY;
-                } elsif ( $re =~ / \G ([-imsx]+ ) : /xgc ) {
-                    #   Mode-modified span (?imsx-imsx: ... )
+                } elsif ( $re =~ / \G ([-imsxdual]+ ) : /xgc ) {
+                    #   Mode-modified span (?imsxdual-imsx: ... )
                     my $mode = $1;
                     $tk_arg_a = $mode;
                     $tk_sub_type = $TKST_MODE_SPAN;
@@ -722,83 +739,111 @@ sub apply_modes {
     Passed:
       - an existing modes bit vector (as an integer)
       - a mode flags string
-      - an indicator which is false if all modes allowed, true to only allow
-        those that can be used in embedded mode-changers. 
+      - an indicator which specifies which modes are allowed:
+            $SPANNING_MODES
+               allow those that can be used in embedded mode changers, i.e. both
+               mode-modified spans and lexical mode changers
+            $LEXICAL_MODES
+               allow those that can be used independently: they change the mode
+               until the end of the current sub-expression
+            $ALL_MODES
+               allow all modes
+               
     Returns the vector, with bits cleared for any mode that follows a dash and
     set for any mode present that does not. Other mode bits are unchanged.
     Calls error if unrecognised mode flag supplied.
 
     Perl 5.10 modes:
-        m  Multiline mode - ^ and $ match internal lines
-        s  match as a Single line - . matches \n
+        m  Multiline mode: ^ and $ match internal lines
+        s  match as a Single line: . matches \n ( = dot means all)
         i  case-Insensitive
-        x  eXtended legibility - free whitespace and comments
-        p  Preserve a copy of the matched string - ${^PREMATCH}, ${^MATCH},
+        x  eXtended legibility: free whitespace and comments
+        p  Preserve a copy of the matched string: ${^PREMATCH}, ${^MATCH},
            ${^POSTMATCH} will be defined
         o  compile pattern Once
-        g  Global - all occurrences You can use \G within regex for end-of-previous-match
+        g  Global: all occurrences You can use \G within regex for end-of-previous-match
         c  don't reset pos on failed matches when using /g
         a  restrict \d, \s, \w and [:posix:] to match ASCII only
         aa (two a's) also /i matches exclude ASCII/non-ASCII
-        l  match according to current locale
+        l  match according to current Locale
         u  match according to Unicode rules
         d  match according to native rules unless something indicates Unicode
+                  (D for Default or Dodgy or Depends)
     
-    Assuming that doubled letter implies single letter mode:
-        a   turns a on, but doesn't turn aa on
-        -a  turns both a and aa off        
-        aa  turns a on as well as aa
-        -aa turns aa off, but does not turn a off [## NEED TO VERIFY THIS]
+For earlier Perls, only imsx were allowed in mode-modified spans or lexical mode
+changers. But we can allow any mode, anywhere - the main caveat is that earlier
+Perls implicitly have /d, whereas later ones can assume /u.
 
-    
+From Perl 5.14 (and probably from 5.10), most modes can be specified within a
+regex: the exceptions are c, g and o.
+    (? adlupimsx-imsx)           Lexical mode changer
+    (?^a lupimsx)                Lexical mode changer, starting from d-imsx
+    (? adlu imsx-imsx :pattern)  Mode-modified span
+    (?^a lu imsx      :pattern)  Mode-modified span, starting from d-imsx
     
 =cut
-    my ($previous_mode_bits, $mode_flags_text, $embedded_only) = @_;
+    my ($previous_mode_bits, $mode_flags_text, $allowed_modes_code) = @_;
     my $hyphen_seen   = 0;
     my $positive_bits = 0;
-   
-    my $embedded_modes_ref = {
-        x => $MODE_X, s => $MODE_S, m => $MODE_M, i => $MODE_I,
+    my $negative_bits = 0;
+    
+    $mode_flags_text =~ s/ aa /A/gx;    # Bodge aa
+    my $lexical_modes_ref = {
+        d => $MODE_D, u => $MODE_U, A => $MODE_AA, a => $MODE_A,
+        l => $MODE_L, 
+        x => $MODE_X, s => $MODE_S, m => $MODE_M,  i => $MODE_I,
+        };   
+    my $spanning_modes_ref = {
+        d => $MODE_D, u => $MODE_U, A => $MODE_AA, a => $MODE_A,
+        l => $MODE_L, 
+        x => $MODE_X, s => $MODE_S, m => $MODE_M,  i => $MODE_I,
         };
-    my $overall_modes_ref = {
-        x => $MODE_X, s  => $MODE_S,  m => $MODE_M,  i => $MODE_I,
-        p => $MODE_P, o  => $MODE_O,  g => $MODE_G,  c => $MODE_C,
-        a => $MODE_A, aa => $MODE_AA, l => $MODE_L,  d => $MODE_D,
+    my $all_modes_ref = {
+        d => $MODE_D, u => $MODE_U, A => $MODE_AA, a => $MODE_A,
+        l => $MODE_L,
+        x => $MODE_X,  s  => $MODE_S,  m => $MODE_M,  i => $MODE_I,
+        p => $MODE_P,  o  => $MODE_O,  g => $MODE_G,  c => $MODE_C,
         };
-    my $can_be_doubled = $MODE_A;
 
-    my $allowed_modes_ref = $embedded_only ? $embedded_modes_ref
-                                           : $overall_modes_ref;
+    my $can_be_negated = $MODE_I | $MODE_M | $MODE_S | $MODE_X;
+    
+    my $allowed_modes_ref =
+            ($allowed_modes_code == $SPANNING_MODES) ? $spanning_modes_ref
+          : ($allowed_modes_code == $LEXICAL_MODES)  ? $lexical_modes_ref 
+          : ($allowed_modes_code == $ALL_MODES)      ? $all_modes_ref : {};
     my $check_bits = 0;
     for my $mode_char (split ('',$mode_flags_text)) {
         if ($mode_char eq '-') {
             $hyphen_seen = 1;
-            $positive_bits = $check_bits;
-            $check_bits = 0;
         } else {
             my $mode_bit = $allowed_modes_ref->{$mode_char};
             if (defined $mode_bit) {
                 if ($check_bits & $mode_bit) {
                     # We have already seen this bit
-                    if ($mode_bit & $can_be_doubled) {
-                        $check_bits |= ($mode_bit << 2);
-                        $check_bits ^= $mode_bit if $hyphen_seen; # aa doesn't turn a off
-                    } else {
-                        _error("Mode: $mode_char used more than once")
-                    }
+                    $mode_char =~ s/A/aa/;
+                    _error("Mode: $mode_char used more than once")
                 } else {
                     $check_bits |= $mode_bit;
+                    if ($hyphen_seen) {
+                        if ($mode_bit & $can_be_negated) {
+                            $negative_bits |= $mode_bit;
+                        } else {
+                            _error("Mode $mode_char is not allowed to be negated");
+                        }
+                    } else {
+                        $positive_bits |= $mode_bit;
+                    }
                 }
             } else {
                 _error("Unrecognised mode: $mode_char in $mode_flags_text");
             }
         }
     }
-    if ( ! $hyphen_seen) {
-        return ($previous_mode_bits | $check_bits);
-    }        
-    my $negative_mask = $MODE_ALL ^ $check_bits;
-    return ($previous_mode_bits & $negative_mask);
+    my $result_bits = $previous_mode_bits | $positive_bits;
+    
+    my $negative_mask = $MODE_ALL ^ $negative_bits;
+    $result_bits &= $negative_mask;
+    return $result_bits;
 }
 
 sub tre_to_wre {
@@ -807,13 +852,13 @@ sub tre_to_wre {
     my $default_modes_bits = 0;   # Default no modes on
     my $updated_mode_bits = apply_modes($default_modes_bits,
                                         $mode_flags,
-                                        $ALL_MODES_ALLOWED 
+                                        $ALL_MODES
                                         );
     $generated_wre = '';
     $regex_struct_ref = {type=> 'root', child => []};
     my $root_ref = $regex_struct_ref->{child};    
     init_tokeniser($old_regex);
-    analyse_regex($root_ref, $updated_mode_bits);
+    analyse_regex($root_ref, $updated_mode_bits, 0);
     combine_strings($regex_struct_ref);
     analyse_alts($regex_struct_ref);
     generate_wre($regex_struct_ref, 0);
@@ -1020,14 +1065,21 @@ sub generate_non_captures {
     my $sub_type = $entry_ref->{sub_type} || '';
     my $sp = ' ';   # Single space
     if ($sub_type eq $TKST_MODE_SPAN) {
-        # Translate mode info into words
-        # i-mode is the only one that generates stuff in the wre:
-        # x- s- and m-modes are handled when parsing
+        # Translate mode info into words.
+        # i, d, u, a and l modes generate stuff in the wre.
+        # i mode can be turned on or off: d, u, a and l can only be turned on.
+        # x s and m modes are handled when parsing
+        
         my $modes = $entry_ref->{options};
+        my $mode_bits = apply_modes(0, $modes, $SPANNING_MODES);
+        my $mode_text = '';
         if ($modes =~ / .* [-] .* [i] /x) {
-            return 'case-sensitive ';
-        } elsif ($modes =~ /  [^-]* [i] /x) {
-            return 'case-insensitive ';
+            # Turning i-mode off
+            $mode_text .= 'case-sensitive ';
+        } else {
+            $mode_text .= _mode_text($mode_bits);
+        #} elsif ($modes =~ /  [^-]* [i] /x) {
+        #    return 'case-insensitive ';
         }
     } elsif ($sub_type eq $TKST_CONDITION) {
         _error("Unimplemented: condition within regex")
@@ -1309,25 +1361,33 @@ sub generate_stuff_from_entry {
                 $indent_level++;    # Move the entries over from either/or
                 $current_indent = $indent_level;
                 my $mode_indent = 0;
+                my $mode_switch_a_seen_count = 0;
                 for my $entry_ref ( @{$alt_ref} ){
                     # For each entry within this alternative
                     if ($entry_ref->{type} eq 'nested' ) {
                         ## generate_wre($entry_ref, $indent_level);
                         generate_wre($entry_ref, $current_indent);
-                    } elsif ( $entry_ref->{type} eq 'mode_switch_a'
-                             && not $mode_switch_a_is_last) {
-                        # mode switch within an entry, and it isn't the last
-                        # element within this alternative
-                        if ($mode_indent) {
-                            # Already indented from a mode_switch_b from the
-                            # preceding alternative or an earlier mode_switch_a
-                            # within the same alternative.
-                            # So outdent from that one first
-                            $current_indent--;
+                    } elsif ( $entry_ref->{type} eq 'mode_switch_a') {
+                        $mode_switch_a_seen_count++;
+                        if ( $mode_switch_a_is_last
+                            && ($mode_switch_a_seen_count == $number_of_switch_mode_a)
+                            ) {
+                            # Trailing mode-switch-a
+                            # Do nothing
+                        } else {
+                            # mode switch within an entry, and it isn't the last
+                            # element within this alternative
+                            if ($mode_indent) {
+                                # Already indented from a mode_switch_b from the
+                                # preceding alternative or an earlier mode_switch_a
+                                # within the same alternative.
+                                # So outdent from that one first
+                                $current_indent--;
+                            }
+                            $line = _mode_text($entry_ref->{value});
+                            emit_line($current_indent++);
+                            $mode_indent = 1;
                         }
-                        $line = _mode_text($entry_ref->{value});
-                        emit_line($current_indent++);
-                        $mode_indent = 1;
                     } elsif ( $entry_ref->{type} ne 'removed' ) {
                         generate_stuff_from_entry($entry_ref);
                         emit_line($current_indent);
@@ -1375,38 +1435,19 @@ sub generate_stuff_from_entry {
 } # End naked block for generate_wre and friends
 
     
-# Mode-modifiers within Alternations
-# ----------------------------------
-#
-# Just adding an extra level of indent would not work, as the outdent
-# to get back for the 'or' will terminate the mode incorrectly.
-#
-#    (?: a (?i) b | c ) d
-#
-#   either
-#       a
-#       case-insensitive
-#           b
-#   or  # oops! case-sensitivity should stay off here
-#       c
-#   d
-#
-#  Output has to be:
-#   either
-#       a
-#       case-insensitive
-#           b
-#   or
-#       case-insensitive
-#           c
-#   d
 
     
     # Slippery slope: parentheses in wordies
     #  (?: abc | def | p \d+ q | [xyz] )
     #  'abc' 'def' (p digits q) x y z
     #  'abc' or 'def' or (p then digits then q) or x or y or z
-
+    #
+    # time=hh:mm
+    # 'time=' then (as hh two digits) then : then (asmm two digits)
+    # 'time='
+    # as hh two digits
+    # :
+    # as mm two digits
     
     
 
@@ -1416,16 +1457,23 @@ sub generate_stuff_from_entry {
 sub _error {
     my ($text) = @_;
     print STDERR "Error: $text\n";
+    $generated_wre .= 'Error: ' . $text . "\n";
 }
 
 # -------------------------------
 sub _mode_text {
-    # Passed a force-case value ($FORCE_CASE_SENSITIVE or $FORCE_CASE_INSENSITIVE)
+    # Passed a force-mode value 
     # Returns the text to go into the wre
-    my ($force_case_value) = @_;
-    return $force_case_value == $FORCE_CASE_SENSITIVE 
-                                        ? 'case_sensitive '
-                                        : 'case_insensitive ';
+    my ($force_mode) = @_;
+    my $mode_text = '';
+    $mode_text .= 'case-sensitive '   if $force_mode & $FORCE_CASE_SENSITIVE;
+    $mode_text .= 'case-insensitive ' if $force_mode & $FORCE_CASE_INSENSITIVE;
+    $mode_text .= 'legacy-unicode '   if $force_mode & $MODE_D;
+    $mode_text .= 'full-unicode '     if $force_mode & $MODE_U;
+    $mode_text .= 'ascii '            if $force_mode & $MODE_A;
+    $mode_text .= 'ascii-all '        if $force_mode & $MODE_AA;
+    return $mode_text;
+    
 }
 # -------------------------------
 sub is_combinable_string {
@@ -1621,20 +1669,18 @@ sub analyse_alts {
 }
 # -------------------------------
 sub analyse_regex {
-    my ($tree_ref, $mode_bits) = @_;
+    my ($tree_ref, $mode_bits, $depth) = @_;
+    $depth++;
     my $alt_ndx  = 0;
     my $part_ndx = 0;
     my $x_mode   = $mode_bits & $MODE_X;
     my $IN_CLASS = 1;
     my $OUTSIDE_CLASS = 0;
     
-    my $force_case    = 0;  # Set when lexical case-sensitivity mode change
-                            # applies, e.g. from (?i) or (?-i) until the end of
-                            # the current sub-expression or until there is
-                            # another lexical mode change. Not passed through to
-                            # nested elements
-    
-
+    my $force_mode = 0; # Set when lexical mode change applies, e.g. from
+                        # (?idualp) or (?-i) until the end of the current
+                        # sub-expression or until there is another lexical mode
+                        # change. Not passed through to nested elements
     
     my ($token_type, $token, $tk_comment, $tk_sub_type,
         $tk_arg_a, $tk_arg_b);
@@ -1673,7 +1719,7 @@ sub analyse_regex {
                     # to 'after last char in string or before any newline'
                     $token = 'end-of-line';
                 } else {
-                    # Oherwise it means
+                    # Otherwise it means
                     # 'after last char in string or before a string-ending newline'
                     # so it's sort of end-of-string but not quite.
                     # 'eosx' is what we use for legacy $
@@ -1713,7 +1759,8 @@ sub analyse_regex {
                     } else {
                         my $range_start = @{$tree_ref->[$alt_ndx][$part_ndx]{chars}}[-1];
                         my $range_end = $token;
-                        my $range_text = 'range ' . $range_start . ' to ' . $token;
+                        ## my $range_text = 'range ' . $range_start . ' to ' . $token;
+                        my $range_text = $range_start . ' to ' . $token;
                         if (    $range_start lt $range_end
                              && (  ($range_start =~ / ^ [a-z] $ /x
                                  && $range_start =~ / ^ [a-z] $ /x)
@@ -1743,11 +1790,11 @@ sub analyse_regex {
             $alt_ndx++;
             $part_ndx = 0;
             
-            if ($force_case != $FORCE_CASE_OFF) {
-                # A (?i) or (?-i) in an earlier alternative is still in effect,
+            if ($force_mode != $FORCE_MODE_NONE) {
+                # A (?idual) or (?-i) in an earlier alternative is still in effect,
                 # so create a synthetic mode_switch element to trigger indent
                 $tree_ref->[$alt_ndx][$part_ndx] = {type    => 'mode_switch_b',
-                                                    value   => $force_case,
+                                                    value   => $force_mode,
                                                     comment => $tk_comment,
                                                    };
                 $part_ndx++;
@@ -1765,17 +1812,24 @@ sub analyse_regex {
             if ($tk_sub_type eq $TKST_MODE_SPAN) {
                 $nested_mode_bits = apply_modes($mode_bits,
                                                 $tk_arg_a,
-                                                $EMBEDDED_MODES_ONLY
+                                                $SPANNING_MODES
                                                 );
             }
             my $reached_end = analyse_regex($tree_ref->[$alt_ndx][$part_ndx]{child},
-                                            $nested_mode_bits);
-            _error("Unbalanced parentheses: $token") if $reached_end;
+                                            $nested_mode_bits,
+                                            $depth);
+            if ($reached_end) {
+                _error("Unbalanced parentheses");
+                return 1;  #---->>
+            }
             $part_ndx++;
         } elsif ($token_type eq 'paren_end') {
             # Right parenthesis, other goodies such as quantifiers and their
             # modifiers may follow, but not yet parsed
-            return 0;
+            if ($depth ==1) {
+                _error("Unbalanced parentheses");
+            }
+            return 0;  #---->>
         } elsif ($token_type eq 'quant') {
             # Quantifier - applies to previous part
             if ($part_ndx == 0) {
@@ -1803,30 +1857,49 @@ sub analyse_regex {
             # Mode changes until end of sub-expression
             
             # For s and m, just set or clear $mode_bits
-            # For x, set or clear $mode_bits and $x_mode
-            # For i, it's much messier. We set or clear the i-mode bit here,
-            # but that doesn't achieve much
+            # For x, set or clear $mode_bits and also ensure $x_mode is correct
+            # so that parsing is done correctly.
             
-            $mode_bits = apply_modes($mode_bits, $tk_arg_a, $EMBEDDED_MODES_ONLY);
-            $x_mode    = $mode_bits & $MODE_X;
+            # For i and d/u/a/l, it's messier. We set or clear the mode bits
+            # here, and set the value to do the rest later
             
-            if ($tk_arg_a =~ /i/) {
-                # Turning i-mode on or off
-                my $i_mode = $mode_bits & $MODE_I;
-                $force_case = $i_mode ? $FORCE_CASE_INSENSITIVE
-                                      : $FORCE_CASE_SENSITIVE;
+            my $new_mode_bits = apply_modes(0,          $tk_arg_a, $LEXICAL_MODES);
+            $mode_bits        = apply_modes($mode_bits, $tk_arg_a, $LEXICAL_MODES);
+            $x_mode           = $mode_bits & $MODE_X;
+            
+            if ($tk_arg_a =~ /[idualp]/) {
+                if ($tk_arg_a =~ /i/) {
+                    # Turning i-mode on or off.
+                    my $i_mode = $new_mode_bits & $MODE_I;
+                    # There are two i-mode bits in $force_mode,
+                    #   one for (?i) and one for (?-i)
+                    # Turn both bits off
+                    $force_mode &= ~ ($FORCE_CASE_INSENSITIVE | $FORCE_CASE_SENSITIVE);
+                    # Now turn on the one that we want
+                    $force_mode |= ($i_mode ? $FORCE_CASE_INSENSITIVE
+                                            : $FORCE_CASE_SENSITIVE);
+                }
+                if ($tk_arg_a =~ /[dual]/) {
+                    # One of the Unicode modes has been specified
+                    # Turn off all the mutually-exclusive Unicode mode bits
+                    my $uni_mask = ($MODE_D | $MODE_U | $MODE_A | $MODE_AA | $MODE_L);
+                    $force_mode &= ~ $uni_mask;
+                    # Now turn on the relevant one
+                    $force_mode |= ($new_mode_bits & $uni_mask);
+                }
+                if ($tk_arg_a =~ /[p]/) {
+                    # /p mode
+                    ## Should set a global flag
+                }
                 $tree_ref->[$alt_ndx][$part_ndx] = {type    => 'mode_switch_a',
-                                                    value   => $force_case,
+                                                    value   => $force_mode,
                                                     comment => $tk_comment,
                                                    };
                 $part_ndx++;                  
-                ## _error('Unimplemented: lexical i-mode change (?i) or (?-i)');
             }
-            
-            
         } elsif ($token_type eq 'end_of_regex') {
             ## Should we check for incorrect nesting?
-            return 1;
+            return 1;   #---->>
         } elsif ($token_type eq 'matcher') {
             $tree_ref->[$alt_ndx][$part_ndx] = {type  => 'matcher',
                                                 value => $token,
@@ -1853,14 +1926,23 @@ TO DO:
         \u and \l force the case of the next character.
             \u forces titlecase, not upper-case, for Perl versions from ??
 
-\N{name}    named Unicode
+\N{name} Named Unicode character. There are tens of thousands of them. In Perl
+             it's not the regex engine that handles this: it's done earlier and
+             the actual character is passed to the engine. But for our purposes
+             we have to handle it: possibly only 'require' the names module when
+             this construct is seen.
 \N{U+hex}   Unicode by code point
-
+\N          non-newline (experimental from Perl 5.12). If it is still experimental
+            then it's not appropriate to generate this, but we should accept it
+            in conventional regex input. Syntax looks messy to distinguish from
+            named/numbered Unicode. Need to check whether it is used in other
+            flovours.
 
 \px, \Px    Unicode property, where x is single letter
 \p{name}
 \P{name}    Unicode property, name longer than one character. Thousands of them
-
+            Unicode properties is one area where flavours differ substantially.
+            
     Capture Number Checking.
         Warn if a round-tripped regex will have its capture numbers disturbed.
 
@@ -1969,18 +2051,12 @@ MODES
 \K          see Regexp::Keep. Probably can be handled in the same way as
             zero-width assertions: give it a keyword and generate /K when we
             see it in an wre when we are generating conventional regex.
-            
-/k          Can't find any more details. khaidoan.wikidot.com/perl-basics
-            seems to think it exists as a mode.
 
 \h, \H      Horizontal whitespace, or not
 \v, \V      Vertical whitespace, or not
 
 \C          One byte
 \X          Unicode extended grapheme cluster (base + any modifying characters)
-\N          non-newline (experimental from Perl 5.12). If it is still experimental
-            then it's not appropriate to generate this, but we should accept it
-            in conventional regex input
 
 
 
