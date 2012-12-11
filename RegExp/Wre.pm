@@ -234,36 +234,35 @@ Rules for matching single and double quotes - revisit?
 Unicode options
 Numeral vs. digit
 then
-space-means-whitespace/whitespaces/space options
-back-references
+
+
 condition
 
 =cut
 
-my $GENERATE_FREE_SPACE_MODE;
-my $EMBED_ORIGINAL_REGEX;
-my $WRAP_WITH_DELIMITERS;
-my $USE_APPENDED_MODES;
+my $option_free_space_output;
+my $option_embed_original_regex;
+my $option_delimit_regex;
 
-## my $HACK = 0;
 
 my $xsp;
 my $embed_source_regex;
 
 # Option: causes a single space to be generated as [ ] even if /x mode is off
-# It's a readability preference, and might have some slight performance penalty.
+# It's a readability preference, and might have some slight performance penalty,
+# if the regex engine doesn't optimise it out.
 # Currently it's a constant as there is no mechanism to change it
 # BUG: Setting it to false?? results in [\s+] instead of [\s]+ in space-means-wss
 # mode
 
-my $put_solo_space_into_class = 0;
+my $DEFAULT_SOLO_SPACE_AS_CLASS = 0;
 
 # Characters to put into a character class even when solo.
 # It's a readability preference: we have to generate (e.g.) either [*] or \* 
 # I find the bracketted option clearer than the escaped option, so that a
 # backslash introduces a group (such as \d) or a special character (such as \t)
 # rather than escaping a regex meta-character.
-my $prefer_class_to_escape = 1;
+
 my %char_class_even_when_solo;
 my $DEBUG = 0;
 my $comment_starter = '#';      # Standard for Perl
@@ -1899,19 +1898,19 @@ sub _generate_regex {
                         # A = Atomic, N = not atomic and not fully parenthesised
     
     my $RE_CLASS_CAPTURING   = 'C';
-    my $RE_CLASS_GROUP       = 'G';
     my $RE_CLASS_OTHER_PAREN = 'P';
     my $RE_CLASS_ATOM        = 'A';
     my $RE_CLASS_NEITHER     = 'N';
+    my $RE_CLASS_GROUP       = 'G';
     
     my ($has_capture, $has_optional, $has_mode, $has_quant, $group_type);
     my $mode_string;
     my $quant_text;
     my $capture_group_name = '';
 
-    my $required_modes = 0;     # Bit-map of modes that will bubble up to top
-    my $mode_string_on = '';    # Text for modes to turn on at this level
-    my $mode_string_off = '';   # Text for modes to turn off at this level
+    my $required_modes  = 0;     # Bit-map of modes that will bubble up to top
+    my $mode_string_on  = '';    # Text for modes to turn on at this level
+    my $mode_string_off = '';    # Text for modes to turn off at this level
     
     my $combined_ref = {};  # Start with an empty hash
     # Copy ancestral information
@@ -1930,13 +1929,13 @@ sub _generate_regex {
             if ($combined_ref->{case_insensitive}) {
                 # Already case-insensitive
                 if ($mode_action eq '-') {
-                    $mode_string_off = 'i';
+                    $mode_string_off .= 'i';
                     $combined_ref->{case_insensitive} = 0;  # Turn it off
                 }
             } else {
                 # Not case-insensitive
                 if ($mode_action eq '+') {
-                    $mode_string_on  = 'i';
+                    $mode_string_on  .= 'i';
                     $combined_ref->{case_insensitive} = 1;  # Turn it on
                 }
             }
@@ -1945,7 +1944,7 @@ sub _generate_regex {
         } elsif ($mode_letter eq 'U') {
             # Unicode modes can only be turned on
             if ($combined_ref->{unicode} ne $mode_action) {
-                $mode_string_on = $mode_action;
+                $mode_string_on .= $mode_action;
                 $combined_ref->{unicode} = $mode_action;
             }
         } elsif ($mode_letter eq 'S') {
@@ -2305,7 +2304,8 @@ sub _generate_regex {
     }
 
     if ($embed_source_regex) {
-        $re .= $MAGIC_MARKER . '(' . 2 . ')' . ($node_ref->{a_raw_line} || '') . "\n";
+        my $raw_line = $node_ref->{a_raw_line} || '';
+        $re .= $MAGIC_MARKER . '(' . 2 . ')' . ($raw_line) . "\n" if $raw_line;
     }
     # Node might have children - append their sub-regexes
     if ($child_count) {
@@ -2347,14 +2347,15 @@ sub _generate_regex {
         $group_type = 'N';
     } else {
         # Only one child, so possibly atomic or fully-parenthesised
+        my $wk_re = $re;    # Copy partial regex as we are going to do
+                            # destructive testing
+        $wk_re =~ s/ \Q$MAGIC_MARKER\E [^\n]* \n //gx if $xsp;
         if ($xsp) {
-            $leading_left_paren   = $re =~ / \A \s* [(]        /x;
-            $leading_group_only   = $re =~ / \A \s* [(][?][:]  /x;
-            $leading_non_capture  = $re =~ / \A \s* [(][?]     /x;
+            $leading_left_paren   = $wk_re =~ / \A \s* [(]        /x;
+            $leading_group_only   = $wk_re =~ / \A \s* [(][?][:]  /x;
+            $leading_non_capture  = $wk_re =~ / \A \s* [(][?]     /x;
                         
-            $trailing_right_paren = $re =~ /        [)] \s*
-                                    (?: \Q$MAGIC_MARKER\E [^\n]* \n )?
-                                                            \z /x;
+            $trailing_right_paren = $wk_re =~ /        [)] \s* \z /x;
         } else {
             $leading_left_paren   = $re =~ / \A     [(]        /x;
             $trailing_right_paren = $re =~ /        [)]     \z /x;
@@ -2365,9 +2366,6 @@ sub _generate_regex {
             # Has leading ( and trailing ) so possibly fully parenthesised
             # What we need to know is whether any embedded non-escaped ) matches
             # with the initial (.
-            
-            my $wk_re = $re;    # Copy partial regex as we are going to do
-                                # destructive testing
 
             $wk_re =~ s/ \\ \\      //gx;   # Get rid of any escaped backslashes
             $wk_re =~ s/ \\ [()]    //gx;   # Get rid of any escaped ( or )
@@ -2445,16 +2443,15 @@ sub _generate_regex {
         
         $capture_name[$node_ref->{capture_number}] = $capture_group_name;
         if ($target{does_capture_name} && $capture_group_name ne '') {
-            $re =~ s/ \A \s* [(] [?] [:] / (
-                                            $target{capture_name_start}
-                                            $capture_group_name
-                                            $target{capture_name_end}
-                                            /x; 
-            ## $capture_group_name = $target{capture_name_start}
-            ##                 . $capture_group_name
-            ##                  . $target{capture_name_end};
+            my $replacement = '('
+                            . $target{capture_name_start}
+                            . $capture_group_name
+                            . $target{capture_name_end};
+            $re =~ s< \A \s* [(] [?] [:] ><$replacement>x; 
         } else {
-            $re =~ s/ \A \s* [(] [?] [:] / (  /x;
+            $re =~ s/ \A
+                      ( (?: \Q$MAGIC_MARKER\E [^\n]* \n ) ? )
+                      \s* [(] [?] [:] /$1(/x;
             # For targets that don't directly support named capture groups, we
             # need to be able to correlate capture names with capture numbers:
             # we have to count 'captures' to get this: Note that won't work for
@@ -2561,6 +2558,7 @@ sub _generate_regex {
     # The hierarchy *should* have been enforced by the parser
     #                                               1 1 1 1 1 1 1 1 1 1 2
     #                             1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0
+
     detab();
     c {$has_capture           } ' Y Y Y Y Y Y N N N N N N N N N N N N N N ';
     c {$has_optional          } ' - - - - - - N N N N N Y Y Y Y Y Y Y Y Y ';
@@ -2580,7 +2578,7 @@ sub _generate_regex {
     
     if (defined $node_ref->{look_direction}) {
         # This node has a look-ahead or look-behind assertion
-        my $look_start = $node_ref->{look_direction} eq 'ahead' ? '(' : '(<';
+        my $look_start = $node_ref->{look_direction} eq 'ahead' ? '(?' : '(?<';
         $look_start   .= $node_ref->{look_match} eq 'positive'  ? '=' : '!';
         $re = $look_start . $re . ')';
     }
@@ -2954,8 +2952,7 @@ sub _wre_to_tre {
     #       - do not pass comments through to generated regex
     #       - report named captures as errors if not natively supported, even if
     #         there is a workaround in the target environment to support them
-    #       - do not embed the original indented regex as comments in the
-    #         generated regex
+
     
     
     my ($ire_string, $arg_options_ref) = @_;
@@ -2966,10 +2963,17 @@ sub _wre_to_tre {
     my $embed_original   = $options_ref->{'embed_original'};
     my $wrap_output      = $options_ref->{'wrap_output'};
     my $regex_delimiters = $options_ref->{'regex_delimiters'};
+    my $prefer_class_to_escape
+                         = $options_ref->{'prefer_class_to_escape'};
+                         
+    my $solo_space_as_class    = $DEFAULT_SOLO_SPACE_AS_CLASS;
+    if (defined $options_ref->{'solo_space_as_class'}) {
+        $solo_space_as_class = $options_ref->{'solo_space_as_class'};
+    }
     
-    $GENERATE_FREE_SPACE_MODE = defined $free_space     ? $free_space     : 1;
-    $EMBED_ORIGINAL_REGEX     = defined $embed_original ? $embed_original : 1;
-    $WRAP_WITH_DELIMITERS     = defined $wrap_output    ? $wrap_output    : 1;
+    $option_free_space_output    = defined $free_space     ? $free_space     : 1;
+    $option_embed_original_regex = defined $embed_original ? $embed_original : 1;
+    $option_delimit_regex        = defined $wrap_output    ? $wrap_output    : 1;
     
     if (defined $regex_delimiters) {
         if (     length $regex_delimiters == 1) {
@@ -2985,11 +2989,11 @@ sub _wre_to_tre {
         }
     }
     
-    $xsp = $GENERATE_FREE_SPACE_MODE ? ' ' : '';   # Space for use within regex when in /x mode
-    $embed_source_regex = $EMBED_ORIGINAL_REGEX
-                      && $GENERATE_FREE_SPACE_MODE; # Only possible if /x mode
+    $xsp = $option_free_space_output ? ' ' : '';   # Space for use within regex when in /x mode
+    $embed_source_regex = $option_embed_original_regex
+                      && $option_free_space_output; # Only possible if /x mode
 
-    my %char_class_even_when_solo = (' ' => $xsp ? 1 : $put_solo_space_into_class,
+    %char_class_even_when_solo = (' ' => $xsp ? 1 : $solo_space_as_class,
                                  '(' => $prefer_class_to_escape,
                                  ')' => $prefer_class_to_escape,
                                  '|' => $prefer_class_to_escape,
@@ -2998,6 +3002,10 @@ sub _wre_to_tre {
                                  '?' => $prefer_class_to_escape,
                                  '*' => $prefer_class_to_escape,
                                  '^' => $prefer_class_to_escape,
+                                 '{' => $prefer_class_to_escape,
+                                 '}' => $prefer_class_to_escape,
+                                 $regex_starter  => $prefer_class_to_escape,
+                                 $regex_finisher => $prefer_class_to_escape,
                                  );
     load_ire_lines($ire_string);
     clear_generated_output();
@@ -3377,11 +3385,6 @@ To Do:
             - exact error text vs. some error text vs. no error reported
             - lots more tests in wordy-to-terse direction
             
-            for wordy-to-terse:
-                wordy-in / terse-expected
-            for terse-to-wordy:
-                terse-in / wordy-expected
-            
             
     
     Required for Usefulness
@@ -3409,19 +3412,15 @@ To Do:
                 
     Required to support standard regex features
 
-        Ranges:
-            'range a to g', 'range a through g' and 'range a thru g'.
-            Ranges that are currently unsupported, i.e. not same-case, not
-            numeric etc., are required to support legacy regexes. Explicit
-            keyword 'range' to allow these?, e.g.
-                range control-b to control-x
-                range ' ' to '/'
-            'a - g' is ambiguous without the preceding 'range' keyword, as it
-            could be intended to be the range a-g rather than the three
-            characters 'a', hyphen and 'g'. Probably best not to support it:
-            could create an observation if it is seen, or have a rule that
-            unquoted solo hyphens are not allowed between a pair of naked
-            letters or a pair of naked digits.
+        Ranges (implemented):
+
+            'a - g' is ambiguous as it could be intended to be the range a-g
+            rather than the three characters 'a', hyphen and 'g'. Probably best
+            not to support it: could create an observation if it is seen, or
+            have a rule that unquoted solo hyphens are not allowed between a
+            pair of naked letters or a pair of naked digits. Or even not allowed
+            between any single characters: so it would have to moved to be first
+            or last, or changed to use the word 'dash' or 'hyphen'.
         
         Interpolation:
 
@@ -3513,47 +3512,65 @@ To Do:
     
         Multiple modifiers on one line: report error if capture, optional,
             quantifier are not in that order
+            
+        Disallow single naked digit preceding non-naked. This is to avoid the
+         semantic trap where the user writes '2 letters' meaning 'two letters'
+            2 letters     # Not allowed, have to say 'letters 2'
+            2 or letters  # Allowed
+            2 4 6 letters # Allowed
+            
+        Disallow overlapping naked characters or ranges and groups. This is to
+         avoid the semantic trap where the normal English usage dffers from what
+         the wordy would be mean. E.g.
+            digits 2 3 4    # Should be disallowed
+            letters p q r   # Should be disallowed
+            letters a to f  # Should be disallowed
+            
+        Allow n+ (where n is an integer) to mean 'qty n or more'
+            1+ letters  # One or more letters
+            0+ digits   # Zero or more digits = optional digits
+            five+ 'vegetables' # five or more 'vegetables'
+
         Error reporting of disallowed combinations, e.g.
-            negative/positive
-            negative + negative
+            negative and positive
+            multiple negated matchers, e.g.
+                non-letter non-digit  # should be not letter digit
             not, followed by an assertion (or auto lookahead/behind??)
-            mixing 'any' with other groups or characters
+            mixing 'char' with other groups or characters
             negative + singular + plural
-        ' ' means whitespace
-            A space character within a quoted literal would be treated as
-            specifying that one or more whitespace characters are allowed there.
-        ' '  means whitespace-character
-            A space character within a quoted literal would be treated as
-            specifying that one whitespace character is allowed there.
+            naked '-' between other single characters (possibly intended to be a
+              range)
+            Warning if spurious pseudo-range seen, e.g. a - d, or 0 - 5
             
         Prettier output
              Getting trailing quantifiers on their own lines would be a good start
              
-
-                
-        White space:
-            Tie down definition, check implementation
-            Implement 'whitespace-character' to allow single whitespace character
-     
-        Change definition of 'digit', add keyword 'numeral'
-            'Digit' is always a plain ASCII arabic numeral, that will be treated
-               as a digit by Perl
-            'Numeral' is the same as 'digit' when using ASCII.
-            'Numeral' is any character that has the Unicode property 'Number'
-               when using Unicode. The Unicode::UCD::num() function can convert
-               a series of numerals to the equivalent number
-        Alternatives to 'not', e.g. 'anything except'
-        Leading tabs: handle (e.g. if not mixed with spaces) or report error
+        Make generted regexes closer to normal hand-written ones, e.g.
+            opt whitespaces should produce \s* not (?:\s+)?
         
-        Variations on 'any', e.g. 'any character' ??
+        Allow generation of regexes complete with bounding delimiters and any
+          global modes, e.g.
+            / a .* \w /sux
+          What about other modes such as g and c?
+          
+        Change definition of 'digit', add keyword 'numeral'
+            'Digit' is always a plain ASCII arabic numeral in the range 0 to 9,
+              so it will be treated as a decimal digit by Perl
+            'Numeral' is the same as 'digit' when using ASCII ( /a mode).
+            'Numeral' is any character that has the Unicode property 'Number'
+               when using Unicode ( /u mode). The Unicode::UCD::num() function can convert
+               a series of numerals to the equivalent number
+            What about /d mode and /l mode?
+            
+        Alternatives to 'not', e.g. 'anything except'
         
         Super-modes:
             things like 'repeat' that translate into /g, but can't be part of
             the generated regex itself. They can be held as part of a regex
             object, and can have effect when methods are invoked.
         Capture-as, a syntactic variation of 'capture as'
-        As, a syntactic variation of 'capture as'
-        Warning if spurious pseudo-range seen, e.g. a - d, or 0 - 5
+
+
         
         
     Bugs
