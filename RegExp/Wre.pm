@@ -15,7 +15,7 @@
        ;
     use Carp;
 
-our $VERSION = '2012.10.08';
+our $VERSION = '2013.01.04';
 
 
 =format
@@ -52,7 +52,7 @@ SYNOPSIS:
     wret()        
             
         wret() is only needed when you want to avoid using an intermediate
-        variable, which would otherwise be needed for:
+        variable to hold the regex, which would otherwise be needed for:
         
             - global matches (where you need to use the /g mode flag)
             - substitutions (s///).
@@ -97,7 +97,10 @@ SYNOPSIS:
         
         2 * $ =     # Simple alternative. One character: either 2, *, $ or =
         
-        c 'dog' e   # Alternatives: just c, all three letters d, o, g, or just e
+        c 'dog' e   # Alternatives:
+                    #   just c,
+                    #   or the three letters d, o, g in that order,
+                    #   or just e
         
         two digits  # Exactly two digits. Note that the quantity is a word
         
@@ -107,7 +110,7 @@ SYNOPSIS:
         
         five digits letters # Five characters, each can be a digit or a letter
         
-        
+        as hh two digits then : then as mm two digit   # Named captures
         
         
 DESCRIPTION:        
@@ -129,9 +132,9 @@ DESCRIPTION:
 
     OO interface:
     
-        The oo interface is intended for situations where:
+        The oo interface is intended for some situations:
             
-            Error Trapping is Important
+            If Error Trapping is Important
             
               Both the procedural interface and the oo interface can only detect
               errors in a wordy regular expression at run time.
@@ -144,12 +147,12 @@ DESCRIPTION:
               it can't be checked until immediately before use; but the same
               problem affects conventional regexps that use interpolation.
               
-              The oo interface also provides cleaner access to error information.
-              The procedural interface is restricted to returning an error string
-              via croak(), whereas the oo interface can persist more detail in
-              the Wre object.
+              The oo interface also allows for cleaner access to error
+              information. The procedural interface is restricted to returning
+              an error string via croak(), whereas the oo interface can persist
+              more detail in the Wre object.
               
-            Efficiency is Crucial
+            If Efficiency is Crucial
             
               There is an efficiency advantage for the oo interface. Using the
               procedural interface requires the wordy regexp text to be checked
@@ -206,7 +209,7 @@ Alternatives can be specified using either/or, with each 'or' vertically below t
 ++++ 
 On a given line: capture, optional, quantifier, and any matchers can only be in that order.
 A line that has any matchers must not have any lines indented from it.
-If you want to use digits as a quantifier rather than the word, prefix it with 'quantity'
+If you want to write a quantifier as a digit rather than the word, prefix it with 'quantity'
 Groups: letter, digit, word-character
 Named characters: optional except for:
         hash (meaning the # character which starts a comment)
@@ -255,6 +258,9 @@ my $embed_source_regex;
 # BUG: Setting it to false?? results in [\s+] instead of [\s]+ in space-means-wss
 # mode
 
+# Perl: this works in Perl, but some flavours ignore unescaped spaces within
+#       character classes in free-spacing mode.
+
 my $DEFAULT_SOLO_SPACE_AS_CLASS = 0;
 
 # Characters to put into a character class even when solo.
@@ -265,7 +271,8 @@ my $DEFAULT_SOLO_SPACE_AS_CLASS = 0;
 
 my %char_class_even_when_solo;
 my $DEBUG = 0;
-my $comment_starter = '#';      # Standard for Perl
+my $comment_starter = '#';      # Standard for Perl, and other regex flavours
+                                #  that allow comments
 my $regex_starter   = '/';      # Globals used by character encoder and regex 
 my $regex_finisher  = '/';      # generator
 
@@ -284,7 +291,9 @@ my %target = ( does_capture_name  => 1,
 
 my @capture_name;
 
-
+my @ire_lines;          # Global to allow hackish macro definitions
+my $global_indent = 0;  # Global to allow hackish macro definitions
+my %macros = (macro => "two digits\ntwo letters");
 
 my $LT_GROUP    = 'group';      # Group name, e.g. LETTERS or DIGIT or DIGITS
 my $LT_CHAR     = 'char';       # One character, whether specified as a 
@@ -304,9 +313,15 @@ my $LT_RANGE    = 'range';      # A range *token* such as 4-7 or b-j. The parser
 my $LT_ASSERTION  = 'matcher';  # The name of a zero-width matcher, such as end-of-line
 my $LT_BACKREF    = 'backref';  # A back-reference
 my $LT_POSIX      = 'posix';    # A POSIX character class
+my $LT_UNIPROP    = 'uniprop';  # A Unicode property
 
 my %LIT_TYPE_SINGLE_CHAR =
-         ($LT_CHAR => 1, $LT_CONTROL => 1, $LT_HEX => 1,$LT_OCTAL => 1);
+         ($LT_CHAR    => 1,
+          $LT_CONTROL => 1,
+          $LT_HEX     => 1,
+          $LT_OCTAL   => 1,
+          ### $LT_UNIPROP => 1,
+          );
 
 my $TT_COMMENT     = 'comment';
 my $TT_LITERAL     = 'literal'; # Solo character, or quoted sequence, or named character
@@ -321,7 +336,13 @@ my $TT_WORD_HYPHEN = 'word_hyphen';
 my $TT_ERROR       = 'error';   # Syntax error detected by get_next_token
 my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
                                 # (not to be confused with the token EOL)
-
+my $TT_SAME_LINE_MACRO
+                   = 'same_line_macro';
+                   
+    my $ELIDED_THEN = -2;
+    my $chunker_in_seq_mode = 0;
+    
+    
 { # naked block for tokeniser
     my $line = '';
     my $token_pos = 0;
@@ -347,6 +368,8 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
     # values (whether accessed directly or by an accessor routine) are only
     # useful between when gnt() was called and the next level of recursion.
     
+
+    
     my $token = '';
     my $token_raw;
     my $token_flags;
@@ -354,7 +377,7 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
     my $prev_prev_token = '';
     my $delimiter = '';
     
-    my $token_type;
+    my $token_type = '';
     my $token_start_pos;
     my $word_is_plural;             # True if word found in plural list, e.g. HASHES or LETTERS
     my $word_is_negated;
@@ -388,7 +411,11 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
     
     # Normalised, anglicised, lower-cased keywords
     # Converts synonyms to standard form
-    my %synonyms = (cased              => 'case_sensitive'       ,
+    my %synonyms = (any_ch             => 'character'            ,
+                    any_character      => 'character'            ,
+                    any_chs            => 'characters'           ,
+                    any_characters     => 'characters'           ,
+                    cased              => 'case_sensitive'       ,
                     ch                 => 'character'            ,
                     chs                => 'characters'           ,
                     char               => 'character'            ,
@@ -414,6 +441,7 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
                     opt                => 'optional'             ,
                     optionally         => 'optional'             ,
                     qty                => 'quantity'             ,
+                    seq                => 'sequence'             ,
                     sos                => 'start_of_string'      ,
                     sol                => 'start_of_line'        ,
                     thru               => 'to'                   ,
@@ -445,6 +473,8 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
                             optional
                             quantity
                             then
+                            sequence
+                            define
                             };
     
     for my $k (@keyword_array) {
@@ -471,11 +501,14 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
     
     normalise_hash_contents(\%kw);
     
-    my %is_plural_of = (letters     => 'letter',
-                        lcletters   => 'lcletter',
-                        ucletters   => 'ucletter',
+    my %is_plural_of = (characters  => 'character',
                         digits      => 'digit',
-                        characters  => 'character',
+                        genericnewlines
+                                    => 'genericnewline',
+                        letters     => 'letter',
+                        lcletters   => 'lcletter',
+                        numerals    => 'numeral',
+                        ucletters   => 'ucletter',
                         whitespaces => 'whitespace',
                         ## Should whitespace always be plural?
                         ## Decision: No
@@ -483,20 +516,18 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
                         ##   - It is irregular
                         ##   - Means that also need 'whitespace-character' to be
                         ##       able to get a single whitepace (or say 'one whitespace')
-                        wss         => 'whitespace',
                         wordchs     => 'wordch',
                         wordchars   => 'wordch',
                         wordcharacters
                                     => 'wordch',
-                        genericnewlines
-                                    => 'genericnewline',
-                                    
+                        wss         => 'whitespace',                                    
                         );
     
     my %group_words = (letter     => 'noun',
                        lc_letter  => 'noun',
                        uc_letter  => 'noun',
                        digit      => 'noun',
+                       numeral    => 'noun',
                        whitespace => 'adj',
                        word_ch    => 'noun',
                        character  => 'noun',
@@ -515,6 +546,7 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
                       space_means_ws   => 'S1', # space within string means whitespace mode
                       space_means_wss  => 'S+', # space within string means whitespaces mode
                       space_means_space=> 'S-', # space within string means space mode
+                      branch_reset     => '|',  # Branch reset is treated as a dummy mode
                       );
     normalise_hash_keys(\%mode_words);
     
@@ -661,6 +693,16 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
     sub token_type {
         # Accessor for token_type
         return $token_type;
+    }
+    
+    sub token_text {
+        # Accessor for token
+        return $token;
+    }
+    
+    sub rest_of_line {
+        # Returns entire contents of rest of line
+        return substr($line, pos $line);
     }
     sub wre_to_terse {
         
@@ -824,7 +866,10 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
         ##
         ## Note: Other modes (/i, /s, /m etc.) will be ignored because the
         ##       values of those mode flags get baked into the regex that is
-        ##       being interpolated.
+        ##       being interpolated. It's best that they are ignored, as they
+        ##       specify things (such as case-sensitivity) that are correctly
+        ##       specified by the wordy itself: it would be much worse for /s
+        ##       and /m as they would mutate start-of-string, non-newline etc.
         
         
         
@@ -899,8 +944,10 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
         } else {
             # Convert the wre to a qr regex literal
             my $terse = _wre_to_tre($wre, $option_ref);
-            
-            eval {$qr = qr/$terse/x};
+            my $option_free_space = $option_ref->{'free_space'};
+            # Assuming that _wre_to_tre defaults to free-spacing output
+            my $free_space = defined $option_free_space ? $option_free_space : 1;
+            eval {$qr = $free_space ? qr/$terse/x : qr/$terse/ };
             
             if ($@) {
                 croak "RegExp::Wre wre(): Invalid regex generated: $@";
@@ -913,7 +960,7 @@ my $TT_NO_MORE     = 'no_more'; # End of regex line  - no more tokens
             }
         }
         
-        $self->{'terse'} = $qr; # Stash the qr regex literal
+        $self->{'qr_terse'} = $qr; # Stash the qr regex literal
         
         ## If we discovered errors, report them and/or stash them.
         ## An invalid wre should not normally be ignored. The default
@@ -957,9 +1004,20 @@ sub new {
     my $self = { };
     
     ## say ('in wre');    
-
+    my $flavour = $options_ref->{flavour} || 'Perl';
     my $terse = _wre_to_tre($wre, $options_ref);
-    $self->{'terse'} = $terse;
+    my $option_free_space = $options_ref->{'free_space'};
+    # Assuming that _wre_to_tre defaults to free-spacing output
+    my $free_space = defined $option_free_space ? $option_free_space : 1;
+    
+    if ($flavour =~ /^Perl/i) {
+        eval {$self->{'qr_terse'} = $free_space ? qr/$terse/x : qr/$terse/ };
+        if ($@) {
+            $self->{'qr_terse'} = "# Error: $@";
+        }
+    }
+    # Don't use qr/ / otherwise non-Perl terse expressions crash
+    $self->{'terse'} = $terse; 
     $self->{'ire'} = $wre;
     
     bless ($self, $class);
@@ -969,7 +1027,7 @@ sub new {
 
 sub _regex {
     my ($self, $other, $swap) = @_;
-    my $terse = $self->{terse};
+    my $terse = $self->{'qr_terse'};
     #say ("in regex: returning $terse");
     ## my $pause = 1;
     return $terse;
@@ -985,14 +1043,14 @@ sub _bool {
     ## my $str = $self->{terse} . '';
     ## say "terse: $str";
     ## my $pause = 2;
-    return ($_ =~ $self->{terse});
+    return ($_ =~ $self->{'qr_terse'});
 }
 
 sub _num {
     my ($self, $other, $swap) = @_;
     ## say 'in num';
     ## my $pause = 3;
-    return $self->{terse};
+    return $self->{'qr_terse'};
 }
 
 sub _other{
@@ -1038,15 +1096,18 @@ sub flag_value {
         pos($line) = 0;
         $token_pos = 0;
         $line_has  = 0;     # Bit mask of what has been seen on this line
-
+        
     }
     sub gnt {
         # get next token
         # Looks up barewords and sets $token_word to a standardised form, so
         # 'ThRouGH' as a bareword would be standardised to 'to', as case is
         # ignored and 'through' is a synonym of 'to'.
-        # Returns
-        #   
+        # Returns nothing directly, but has lots of side-effects
+        #
+        
+        my ($do_not_expand_macros) = @_;
+        
         ($prev_prev_token, $prev_token) = ($prev_token, $token);
        
         $token_start_pos = pos($line);
@@ -1152,18 +1213,21 @@ sub flag_value {
             #    $literal_type = $LT_BACKREF;
             #    $token = '-' . $backref_number;
         } elsif ($line =~
-            / \G ( back [_-]? ref (?: erence )? [-_] 
-                   ( [a-z] [a-z0-9\-_]* )
+            / \G ( (?: back [_-]? ref (?: erence )?
+                      | captured )
+                  [-_]  ( [a-z] [a-z0-9\-_]* )
                  ) (?: \s | $ ) /xgci) {
-            # backref-<name>
+            # backref-<name> or captured-name
             $token_raw = $1;
             my $backref_name = $2;
             $token_type = $TT_LITERAL;
             $literal_type = $LT_BACKREF;
             $token = $backref_name;
 
+
+            
                         
-        } elsif ($line =~ / \G ( [a-z] [-_a-z0-9]*? [a-z0-9] )
+        } elsif ($line =~ / \G ( [a-z] [-_a-z]*? [a-z] )
                                ( \s | $       ) /xgci) {
             # 'word' - something starting and ending with a letter, containing
             # only letters, hyphens and underscores
@@ -1204,7 +1268,37 @@ sub flag_value {
 
                     my $word_converted = $token_lc;
                     $word_converted =~ s/[-_]//xg;
+                    
+                    if (exists $macros{$word_converted}
+                        && not $do_not_expand_macros) {
+                        # This is a macro
+                        # Hack the read_line buffer
+                        my $pause = 1;
+                        my $temp_indent = ' ' x ($global_indent + 4);
+                        
+                        my @macro_lines = split /\n/, $macros{$word_converted};
+                        if (scalar @macro_lines == 1) {
+                            my $pause_single_line_macro = 1;
+                            ## my $replacement_pos = pos($line) - length($token_lc);
+                            substr($line,
+                                   $token_start_pos,
+                                   length($token_lc)
+                                   ) = ' ' . $macro_lines[0];
+                            pos($line) = $token_start_pos;
+                            $token_type = $TT_SAME_LINE_MACRO;
+                            gnt();  # Recurse to handle token just inserted
+                            return; ####### ----------->>>>>>>>>>
+                        } else {
+                            @macro_lines = reverse @macro_lines;
+    
+                            for my $idx (0 .. scalar @macro_lines - 1) {
+                                unshift @ire_lines, $temp_indent . $macro_lines[$idx];
+                            }
+                            $token_type = $TT_NO_MORE;
+                            return; ####### ----------->>>>>>>>>>
+                        }
 
+                    }
                     if (   substr($token_lc, 0, $NON_LENGTH) eq $NON_WORD
                         && substr($token_lc, $NON_LENGTH, 1) =~ / [-_] /x ) {
                         # Word starts with 'non-' or local equivalent
@@ -1263,6 +1357,23 @@ sub flag_value {
                                 . ($word_is_negated ? '^' : '')
                                 . $posix_class
                                 . ':]';
+                                
+                    } elsif (my ($uniprop) = $word_converted
+                            =~ / \A  (?: up | (?: unicode  property ) )
+                               # hyphens & underscores deleted  [-_]
+                                     ( [a-z] [-_a-z]* )
+                                   \z /x) {
+                        # up-<name> or unicode-property-<name>
+                        my $up_name = $1;
+                        if ($up_name =~ / \A  l (?: ult | utl | tul | tlu | ltu | lut  ) \z /x) {
+                            # Name is one of the synonyms for \p{L&}
+                            $up_name = 'L&';
+                        }
+                        my $up_first = substr($up_name, 0, 1);
+                        my $up_rest  = substr($up_name, 1);
+                        $token_type = $TT_LITERAL;
+                        $literal_type = $LT_UNIPROP;
+                        $token = '{' . uc($up_first) . lc($up_rest) . '}';
                     } else {
                         # token is the normalised word itself
                         $token = $word_converted;
@@ -1289,25 +1400,31 @@ sub flag_value {
         $token_pos = pos($line);
     }
     
-    sub token_pos {
-        return $token_pos;
-    }
-    
     sub token_start_pos {
         return $token_start_pos;
     }
     
-    sub token_is_kw {
-        my ($keyword) = @_;
-        return (   $token_type eq $TT_WORD
-                && $token      eq $kw{$keyword} );
+    sub token_pos {
+        return pos $line;
     }
     
+    sub token_is_kw {
+        my ($keyword) = @_;
+        
+        return 0 if $token_type ne $TT_WORD;
+        my $kw_value = $kw{$keyword};
+        return 0 unless defined $kw_value;
+        return $token eq $kw_value;
+        
+        ##return (   $token_type eq $TT_WORD
+        ##        && $token      eq $kw{$keyword} );
+    }
+
     sub parse_chunk {
         
         # Parse a single chunk from the input line.
-        # A chunk consists of:
-        #   - a single keyword or phrase (such as 'optional' or 'but as few as possible')
+        # A chunk may consist of:
+        #   - a single keyword (such as 'optional')
         #   - a quantifier phrase (e.g. 'two', 'two of', 'zero or more',
         #                               'one or two', 'quantity 1 or more')
         #   - a single literal or a range (e.g. 'x' or 'TAB' or '1-7' or 'A thru F')
@@ -1315,8 +1432,10 @@ sub flag_value {
         #   (1) A reference to the structure for the complete line
         #   (2) The chunk number within the line
         # Returns:
-        #   negative when the keyword 'then' is found
-        #   zero when it finds no more chunks available from this line
+        #   negative, when
+        #       - the keyword 'then' is found,
+        #       - or 'then' is elided in seq mode (consecutive chunks, no 'or')
+        #   zero, when it finds no more chunks available from this line
         #   True otherwise: 1 if no errors that might be literals, > 1 otherwise
         # Side Effects:
         #   Adds the details of the chunk to the structure referenced by $pl_ref
@@ -1362,7 +1481,7 @@ sub flag_value {
                 }
             }
             if (defined $pl_ref->{min} ) {
-                _error("Have already seen seen a quantifier on this line");
+                _error("Did not expect another quantifier here");
                 $qty_error_seen = 1;
                 gnt();
             } elsif ($token == 0 && $pl_ref->{optional} ) {
@@ -1473,6 +1592,18 @@ sub flag_value {
             } else {
                 push @{$pl_ref->{literal}}, $pending_entry;
             }
+
+            if ($chunker_in_seq_mode) {
+                if ($token_type eq $TT_WORD
+                    && $token eq $kw{then} ) {
+                    # Explicit 'then' will be handled later
+                } elsif ($token_type eq $TT_WORD
+                    && $token eq $kw{or} ) {
+                    # Explicit 'or' stops 'then' being elided 
+                } else {
+                    return $ELIDED_THEN; # ----->>>>>>>>>
+                }
+            }
         } elsif ($token_type eq $TT_ASSERTION) {
             $line_has |= $LINE_HAS_ASSERTION;
             if ( ($line_has & $LINE_HAS_BEEN_NEGATED)
@@ -1497,6 +1628,19 @@ sub flag_value {
                                          flags   => $token_flags,
                                         };
             gnt();
+            
+            if ($chunker_in_seq_mode) {
+                if ($token_type eq $TT_WORD
+                    && $token eq $kw{then} ) {
+                    # Explicit 'then' will be handled later
+                } elsif ($token_type eq $TT_WORD
+                    && $token eq $kw{or} ) {
+                    # Explicit 'or' stops 'then' being elided 
+                } else {
+                    return $ELIDED_THEN; # ----->>>>>>>>>
+                }
+            }       
+            
         } elsif ($token_type eq $TT_MODE) {
 
             my $mode = substr($token_flags, 0, 1);
@@ -1523,9 +1667,11 @@ sub flag_value {
             push @{$pl_ref->{modes}}, $token_flags;
             gnt();
         } elsif ($token_type eq $TT_WORD) {
-            # It's a word, rather than a literal, number or range
-
-            if ($token eq $kw{optional} ) {
+            # It's a word, rather than a literal, number, range or mode
+            if ($token eq $kw{sequence} ) {
+                $chunker_in_seq_mode = 1;
+                gnt();
+            } elsif ($token eq $kw{optional} ) {
                 if ( defined $pl_ref->{min} && $pl_ref->{min} == 0) {
                     _observation("Optional, but already had zero quantifier on this line");
                 }
@@ -1546,6 +1692,7 @@ sub flag_value {
                      || $token eq $kw{notfollowedby}
                      || $token eq $kw{notpreceding}
                      ) {
+                # Look-ahead / look-behind
                 if ($line_has & $LINE_HAS_QUANTIFIER ) {
                     _error("Not allowed after a quantifier: $token_raw");
                     
@@ -1779,18 +1926,21 @@ sub _letter_class {
     ## non-Unicode choices, e.g. 7-bit ASCII vs. 8-bit ASCII
     #
     ## The 'd' setting will differ from what \w will treat as word characters,
-    ## as \w is word and this is explicitly letter
+    ## as \w is word-character and this is explicitly letter
     my ($literal, $unicode, $negated) = @_;
-    my ($uni, $non_uni) = ($literal eq 'letter'   ) ? ('Letter', 'A-Za-z')
-                        : ($literal eq 'lcletter') ? ('Ll', 'a-z')
-                        : ($literal eq 'ucletter') ? ('Lu', 'A-Z')
-                        :                             ('err 3', 'err 3');
+    my ($uni, $non_uni) = ($literal eq 'letter'  ) ? ('Letter', 'A-Za-z')
+                        : ($literal eq 'lcletter') ? ('Ll',     'a-z')
+                        : ($literal eq 'ucletter') ? ('Lu',     'A-Z')
+                        :                            ('err 3',  'err 3');
     $unicode = $unicode || 'a';
     if (defined $unicode) {
         if ($negated) {
             if ($unicode eq 'u') {
                 return ("\\P{$uni}", 0);
             } else {
+                ## There is a ^ in front here, but the negation is being handled
+                ## elsewhere: this routine is called twice, with and without
+                ## negation. The negated result might never get used.
                 return ("^$non_uni", 1);
             }
         } else {
@@ -1950,7 +2100,13 @@ sub _generate_regex {
         } elsif ($mode_letter eq 'S') {
             # space-means-?  ws/wss/space  1/+/-
             $combined_ref->{space_means} = $mode_action;
-        } else {
+        } elsif ($mode_letter eq '|') {
+            # branch-reset is a special case of non-capturing group
+            # It turns branch-reset on at its own level but not below
+            my $pause = 'branch-reset';
+            $combined_ref->{branch_reset} = 1;
+            $mode_string_on .= '|';
+        } elsif ($mode_letter) {
             _error ("Internal error: mode_letter = $mode_letter");
         }
     }
@@ -2170,11 +2326,60 @@ sub _generate_regex {
                 
             } elsif ($lit_type eq $LT_GROUP)  {
                 if ($lit_val eq 'digit') {
+                    
+                    ## Changed definition so 'digit' always means 0-9, even when
+                    ## Unicode mode is explicitly requested
+                    
+                    if ($combined_ref->{unicode} eq 'u') {
+                        # Full Unicode, so \d and \D mean more than [0-9]
+                        # But we want to limit 'digit' to [0-9]
+
+                        $single_char[$sing_or_plural] = '0-9';
+                        $chars[$sing_or_plural] .= '0-9';                                
+                        $char_control[$sing_or_plural] = 99;
+    
+                        if ($lit_negated) {
+                            ## This looks a bit hackish...
+                            ## ...it forces character classes to be all negated,
+                            ##    which is probably OK if multiple-negative are not
+                            ##    allowed - but that error may not be being reported
+                            $overall_negated = 1;
+                        }
+          
+                    } else {
+                        # Not full Unicode, we can use \d or \D
+                        
+                        $single_char[$sing_or_plural] = ($lit_negated || $overall_negated) ? "\\D" : "\\d";
+                        $chars[$sing_or_plural] .= "\\d";
+                        $char_control[$sing_or_plural]++;
+                    }
+                    
+                    
+                } elsif ($lit_val eq 'numeral') {
+                    
+                    # 'Numeral' changes meaning depending on whether Unicode
+                    #   mode applies: either 0-9 or \p{N}
+                    ## Should it generate \p{Nd} instead? If the user wants
+                    ## any numeral \p{N} they would have to say
+                    ##  unicode-property-number or up-n or up-number
+                    #
+                    # It's 'numeral' rather than 'number' because 'number' can
+                    # mean several digits. There might also be a built-in macro
+                    # defined for 'number' at some stage (presumably it will
+                    # match any sequence that meets the normal definitions of
+                    # a number, which might include a sign, commas, and an
+                    # embedded decimal point)
+                    
+                    
+                    # Perl: It can always use \d or \D and the engine will
+                    #       decide what that means, provided we have ensured
+                    #       that it is in the correct d/u/a/l mode
                     $single_char[$sing_or_plural] = ($lit_negated || $overall_negated) ? "\\D" : "\\d";
                     $chars[$sing_or_plural] .= "\\d";
                     $char_control[$sing_or_plural]++;
+                    
                 } elsif ($lit_val =~ /letter/) {
-                    # We need to check whether we have Unicode defaulting,
+                    # We have to check whether we have Unicode defaulting,
                     # explicitly enabled or explicitly disabled to determine
                     # what we generate here.
                     #   default - whatever is easiest/fastest for this target??
@@ -2186,11 +2391,13 @@ sub _generate_regex {
                     # class: other times it will return a range (such as A-Z)
                     # that has to be within a character class
                     my ($force_class, $chars_format);
+                    # The singular version gets the non-negated or negated version
                     ($single_char[$sing_or_plural], $force_class) =
                                             _letter_class($lit_val,
                                                           $combined_ref->{unicode},
                                                           $lit_negated || $overall_negated);
-                                            
+                    # The class version always gets the non-negated version
+                    # because the overall class will get negated
                     ($chars_format, $force_class) =
                                        _letter_class($lit_val,
                                                      $combined_ref->{unicode},
@@ -2224,22 +2431,50 @@ sub _generate_regex {
                     $char_control[$sing_or_plural]++;
                 } elsif (   $lit_val eq 'genericnewline') {
                     if ($lit_negated || $overall_negated) {
+                        # We can't handle a negated generic newline because we
+                        #   can't put it inside a character class
+                        ## Could we output a negative lookahead combined with an
+                        ## any-single-character match?
                         _error("generic_newline is not allowed to be negated");
                     }
-                    ##$single_char[$sing_or_plural] = "\\R";
-                    ##$chars[$sing_or_plural] .= "\\R";
-                    ##$char_control[$sing_or_plural]++;
+
                     # Generic newline is treated as a string as it is not
                     # allowed to go into a class
                     $string_count++;
                     $strings .= ($strings ? ($xsp . '|' . $xsp) : '')
                              . "\\R"
                              . ($lit_ref->{plural} ? '+' : '');
+                } elsif (   $lit_val eq 'unicodecombo') {
+                    if ($lit_negated || $overall_negated) {
+                        # We can't handle a negated extended grapheme cluster
+                        # because it matches any single character: it may also
+                        # match following characters.
+                        # So the only place "non-unicode-combo" or
+                        #  "not unicode-combo" would match would be after the
+                        # last character of the string, aka end-of-string.
+                        _error("unicode_combo is not allowed to be negated");
+                    }
+                    $string_count++;
+                    $strings .= ($strings ? ($xsp . '|' . $xsp) : '')
+                             . "\\X"
+                             . ($lit_ref->{plural} ? '+' : '');                             
                 } else {
                     _error("Unimplemented group: $lit_val");
                     ########## group, but unknown
                 }
-                
+            } elsif ($lit_type eq $LT_UNIPROP) {
+                $single_char[$sing_or_plural]
+                  = (($lit_negated || $overall_negated) ? "\\P" : "\\p")
+                    . $lit_val;
+                $chars[$sing_or_plural] .= "\\p" . $lit_val;
+                $char_control[$sing_or_plural]++;
+                if ($lit_negated) {
+                     ## This looks a bit hackish...
+                     ## ...it forces character classes to be all negated,
+                     ##    which is probably OK if multiple-negative are not
+                     ##    allowed - but that error may not be being reported
+                     $overall_negated = 1;   
+                 }
             } elsif ($lit_type eq $LT_ASSERTION)  {
                 # Matcher: Zero-width assertion
                 # It counts as a string for some purposes
@@ -2512,15 +2747,24 @@ sub _generate_regex {
     my $group_to_mode = sub {
         # Convert a group-only fully-parenthesised partial regex to one that has
         # mode(s)
+        
         if ($re =~ / \s* [(][?]: /x) {
-            $re =~ s/[(][?]:/(?$mode_string:/;
+            if ($mode_string eq '|') {  # branch-reset
+                $re =~ s/[(][?]:/(|/;
+            } else {
+                $re =~ s/[(][?]:/(?$mode_string:/;
+            }
         } else {
             _error("Internal error: missing left parenthesis");
         }
     };
     my $surround_with_mode = sub {
         # Surrounds the partial regex with a mode-modifying span
-        $re = "(?$mode_string:" . $re . ")";
+        if ($mode_string eq '|') {  # branch-reset
+            $re = "(?|" . $re . ")";
+        } else {
+            $re = "(?$mode_string:" . $re . ")";
+        }
     };
     my $surround_with_group = sub {
         # Adds group-only parentheses around the partial regex
@@ -3064,6 +3308,7 @@ sub main_line {
     my $wre = slurp_stdin();
     print (_wre_to_tre($wre, {free_space => 1}) );
     print "\n------------------------\n";
+    undef %macros;
     print (_wre_to_tre($wre, {free_space => 0}) );
     print "\n------------------------\n";
     my $pause = 'end of program';
@@ -3091,7 +3336,7 @@ sub process_line {
     ## do {
         # Process the current line, and any line at the same level.
         # Nested lines (children) are handled by recursive calls.
-        # Each iteration of this do loop handles a complete line, except that
+        # Each iteration of this while loop handles a complete line, except that
         # the keyword 'then' causes a pseudo line end.
         
         # Either/or is handled partly at this level, as it does not follow the
@@ -3108,6 +3353,7 @@ sub process_line {
             
         if (not $chunker_found_then) {
             give_line_to_tokeniser($pl_line);
+            $chunker_in_seq_mode = 0;
             gnt();  # get first token of current line
             ## Base either/or on the first token. If this isn't sufficient (e.g. for
             ## languages where the first token isn't definitive), then change this
@@ -3116,6 +3362,41 @@ sub process_line {
             $has_either = token_is_kw('either');
         }
 
+        if (token_is_kw('define')) {
+            # Macro definition - save the source
+            # First check the word after 'define'
+            gnt(1); # Special 'do not expand macros' call to gnt()
+            if (token_type() eq $TT_NO_MORE) {
+                _error('define, but no name');
+            } else {
+                # Save the rest of the define line, and any lines indented from it
+                my $macro_name = lc token_text();
+                if (exists $macros{$macro_name}) {
+                    # Redefining a macro
+                    my $pause_redefining_macro = 1;
+                }
+                my $same_line_text = rest_of_line();
+                my $macro_text = "\n";
+                my $define_start_level = $pl_indent;
+                ($pl_line, $pl_indent, $pl_comment_lines) = read_line();
+                if        ($pl_indent >= 0 && $pl_indent > $define_start_level) {
+                    # Some line(s) indented
+                    if ($same_line_text ne '') {
+                        _error("Define of $macro_name has both same-line and indented text");
+                    }
+                    while ($pl_indent >= 0 && $pl_indent > $define_start_level) {
+                        $macro_text .= (' ' x $pl_indent) . $pl_line . "\n";
+                        ($pl_line, $pl_indent, $pl_comment_lines) = read_line();
+                    }
+                } else {
+                    # Single-line macro
+                    $macro_text = $same_line_text . "";
+                }
+                $macros{$macro_name} =  $macro_text;
+                next LINE_OR_THEN;  # ----------->>>>>>>>>>>>
+            }
+        }
+        ##($pl_line, $pl_indent, $pl_comment_lines) = read_line();
         
         my $chunk_number = 0;
         my $chunk_result;
@@ -3137,7 +3418,7 @@ sub process_line {
             ' ' x ($pl_indent + $start_pos) . substr($pl_line, $start_pos, $end_pos - $start_pos);
         
         if ($chunk_result < 0) {
-            # 'then' found, so end of sub-line
+            # 'then' found or elided, so end of sub-line
             $chunker_found_then = 1;
             $start_pos = token_pos();
             reset_line_flags();
@@ -3148,21 +3429,22 @@ sub process_line {
             ##     error if 'then' was last token on line: $token_type eq $TT_NO_MORE or $TT_COMMENT
             ##     error if no matchers in partial line preceding 'then'
             
-            if ($chunk_number == 1 && token_start_pos() == 0) {
-                # 'then' at start of complete line is OK
-                gnt();  # Skip the 'then' so the next token is available as expected
-            } else {
-                gnt();  # Skip the 'then' so the next token is available as expected
-                if (token_type() eq $TT_NO_MORE || token_type() eq $TT_COMMENT) {
-                    # 'then' was last non-comment token on line
-                    _error("'then' should not end a line");
-                } elsif (defined $child_ref->{literal}) {
-                    # OK, previous sub-line had some matcher(s)
+            if ($chunk_result != $ELIDED_THEN) {
+                if ($chunk_number == 1 && token_start_pos() == 0) {
+                    # 'then' at start of complete line is OK
+                    gnt();  # Skip the 'then' so the next token is available as expected
                 } else {
-                    _error("No matcher found before 'then'");
+                    gnt();  # Skip the 'then' so the next token is available as expected
+                    if (token_type() eq $TT_NO_MORE || token_type() eq $TT_COMMENT) {
+                        # 'then' was last non-comment token on line
+                        _error("'then' should not end a line");
+                    } elsif (defined $child_ref->{literal}) {
+                        # OK, previous sub-line had some matcher(s)
+                    } else {
+                        _error("No matcher found before 'then'");
+                    }
                 }
             }
-            
             next LINE_OR_THEN;  # ----------->>>>>>>>>>>>
         } else {
             $chunker_found_then = 0;
@@ -3268,18 +3550,23 @@ sub slurp_file {
     return wantarray ? ($file_contents, $error_text) : $file_contents;
 }
 #---------------------------------------
+
 #---------------------------------------
 {
     # Variables for use by read_line, load_ire_lines
-    my @ire_lines;
+
     
     sub load_ire_lines {
         # Passed a string contining a wre
         # Splits it into lines and stores them in the shared array
-        # Re-initialiises other read_line variables as necessary
+        # Re-initialises other read_line variables as necessary
         
         my ($ire_lines_string) = @_;
-        @ire_lines = split( /\n/, $ire_lines_string);
+        if (defined $ire_lines_string) {
+            @ire_lines = split( /\n/, $ire_lines_string);
+        } else {
+            my $pause_undef_split = 1;
+        }
     }
     sub read_line {
         my $rl_line = shift @ire_lines;
@@ -3302,6 +3589,7 @@ sub slurp_file {
         } else {
             $rl_indent = -1;
         }
+        $global_indent = $rl_indent;
         return ($rl_line, $rl_indent, $rl_comment_lines);
     }
 }
@@ -3378,14 +3666,188 @@ To Do:
           The string literals are ignored. This has a different cause than the
           defect above: but could also be 'fixed' by disallowing the mixture.
           
+        - Negated strings are treated as non-negated. They should be flagged as
+          as error (the nearest valid construct is a negative lookeahead)
+          
+        - Negated unicode-properties generate an incorrect regex (doubly negated)
+        - Mixed negatives and non-negatives should be reported as an error.
+          Possible exception for a group and its negation, e.g.
+             whitespace or non-whitespace
+          as that is a Javascript idiom for 'any character at all'.
+          But probably better to recognise it in the other direction, and
+          convert it to 'any-ch'. Generation for flavours with no other way of
+          specifying 'any-character' will have to cope with this.
+          
+        - 'not character' and 'non-character' are not flagged as errors
+        
+        - Multiple negated literals, e.g.
+                non-digit non-whitespace
+          should be reported as an error. This is a notation change, as multiple
+          negated items were allowed (as long as there were no non-negated).
+          However, the semantics are strained: the usual interpretation of 
+          'non-whitespace or non-digit' is [\S\D], which matches any character
+          whereas what is usually wanted is [^\s\d]
+          
     Required for quality control
     
-        Improvements to automated test harness:
+        Improvements to automated test harness (may need supporting changes in
+        this module):
             - checking of error handling
             - exact error text vs. some error text vs. no error reported
             - lots more tests in wordy-to-terse direction
+            - more test data to check matches
+        
+        
+    Changes to the Perl interface
+        - Can regexes be overloaded?
+           Overload routine would examine regex and convert it at compile time.
+           Limitations re interpolated regexes (overload is compile-time only)?
+           Design issues: How does it decide whether a regex is terse or wordy?
+            - presence of regex-specific metas/escapes? \d \s
+            - check whether a regex is a valid wordy and/or a valid terse regex
+            - few regexes are valid both ways. /space/ or / tab / would be.
+            - use a marker for wordies, e.g.
+                 - default to terse unless first non-blank is **
+                 - mode to default to wordy unless first non-blank is ?
+                 
+    Changes/additions to the notation 
+    
+        Allow negated generic-newline (via a negative lookahead). This sounds a
+        bit exotic, but it may be very useful. It's the equivalent of (.*)
+        which captures up to the next newline when /m is not specified.
+        The new notation requires the writer to specifically say 'non-newlines',
+        and being able to make all newlines generic would definitely be a bonus.
+        The main issue is CR/LF/CRLF differences between operating systems, but
+        web is often different from the operating system so it's not safe to
+        just assume that the 'local' newline will be satisfactory. The other
+        Unicode newlines are less of an issue, so if some flavours with weaker
+        Unicode support just handle CR/LF/CRLF that is still worthwhile.
+        
+        
+        
+        Methods of indicating full-string match required. This is messy partly
+          because it's inconsistent between flavours. Some flavours distinguish
+          'match-entire-subject' from 'match-anywhere' by the regex, others by
+          different calls. If we include it in the regex, it may minimise the harm:
+            . If a flavour only allows it in the regex, we support this.
+            . When a flavour calls 'match-entire-subject'
+               - if the regex specifies sos/eos anchors, they are redundant
+               - if the regex omits sos/eos anchors, they are implied by the call
+            . When a flavour calls 'match-anywhere'
+               - if the regex specifies sos/eos anchors, they are applied
+                 so that effectively it is 'match-entire-string' which is what
+                 the regex is specifically asking for.
+               - if the regex omits sos/eos anchors, the regex is unanchored
+               
+        The main downside is that the same regex may mean different things
+        depending on which language and which call it is used with. That's
+        already the situation with terse regexes, but it would be excellent to
+        get away from this for the new notation - it's a common cause of errors
+        
+        The most common is when the writer forgets that the regex is unanchored,
+        calls it in a way that isn't anchored, but actually wanted it to be
+        anchored. So instead of (say) checking that a field is entirely numeric,
+        they end up just checking whether it contains at least one digit
+        somewhere.
+        
+        A less common error is broken anchoring:
+            ^ a | b $
+        intended to be a fully-anchored regex but actually only anchors the a to
+        start and the b to the end, which should have been written as:
+            ^ (?: a | b ) $
+        But that mistake is unlikely with wordy notation:
+            sos
+            a or b
+            eos
+        or contracted to:
+            sos then a or b then eos
+        To get it wrong would require:
+            either sos then a
+            or     b   then eos
             
             
+
+        
+        Perl: never implicitly anchored, always 'match-anywhere'
+        
+        ICU: Provides three calls:
+            matches()       match-entire-string
+            lookingAt()     match-only-at-start-of-subject
+            find()          match-anywhere
+            
+            http://userguide.icu-project.org/strings/regexp
+            
+        Python has a diffent mix: re.match() is anchored at the start of string,
+        so it does 'match-only-at-start-of-subject', whereas re.search() is not
+        anchored.
+                  
+                  
+        What regex notations don't have is 'unanchored' markers. They could
+        be emulated by starting and ending the regex with .* or [\s\S]*
+        
+            - Existing method has start-of-string/end-of-string keywords
+            - Could have match-entire-string/mes keyword
+            - Could provide wre_mes() function to return a match-entire regex
+            - Could provide wre_mp() function to return a match-part regex
+            - Could provide match(regex, subject) function that wraps regex with
+              start-of-string and end-of-string.  search(regex, subject) 
+               could just not wrap, or complain if both sos and eos are present.
+            - Note Python's search() and match() differ. search() is unanchored:
+              match() is anchored only at the start of the string, so it is
+              match_from_start() not match_entire_string()
+            - Don't use match-all to mean match-entire, as 'all' is used to mean
+              global , e.g. Python's findall(regex, subject) function.
+              
+        Keyword 'sequence' or 'seq':
+           following tokens are a sequence unless explicitly or'd
+            as date  seq  two digits       - or /      two digits      - or /      two digits
+        =   as date       two digits  then - or / then two digits then - or / then two digits
+        =   as date
+                two digits
+                - or /
+                two digits
+                - or /
+                two digits
+        Parenthesised spans:
+                    a  then  capture( : then two digits)  then  b
+                  = a
+                    capture( : then two digits)
+                    b
+                  = a
+                    capture
+                       : then two digits
+                    b                                                       
+                  = a
+                    capture
+                       :
+                       two digits
+                    b
+                --------
+                as dd one or two digits then - / then as mm two digits
+                 =  as dd one or two digits
+                    - /
+                    as mm two digits
+                as date (two digits then / then two digits then / then two digits)
+              = as date
+                    (two digits then / then two digits then / then two digits)
+              = as date
+                    two digits
+                    /
+                    two digits
+                    /
+                    two digits
+              = as ddmm (two digits then - / then two digits) then - / then as yy two digits
+              = as ddmm
+                   (two digits then - / then two digits)
+                - /
+                as yy two digits
+              = as ddmm
+                   two digits
+                   - /
+                   two digits
+                - /
+                as yy two digits
+        Keyword 'literal', causing rest of line to be taken as quoted string            
     
     Required for Usefulness
     
@@ -3498,14 +3960,161 @@ To Do:
             sensible name can be difficult to automate.
             
         Properties
-        Unicode mode handling (check whether complete)
+            Implemented crudely, e.g. unicode-property-greek / up-greek etc.
+            No validation of whether the property name is valid.
+            Extra code to allow up-lutl to produce \p{L&}.
+            Possible that same name might produce different effects in different
+            flavours, e.g. scripts vs. blocks implementation differences.
+            Some flavours do not support scripts (only blocks): the best we can
+            do is to warn the user that a block match is being done when the
+            regex asked for a script match.
+            This is part of the problem caused by differing levels of Unicode
+            support.
+        Unicode mode handling
+            (check whether complete)
+            Unicode modes as currently implemented are very Perl-oriented.
+            The overall modes (Unicode and ASCII) are probably OK, at least as
+            a crude global Unicode control, meaning "do everything in as Unicode
+            a fashion as possible in this flavour" or "exclude all Unicode".
+            
         Ordering of string/char class items - maybe do multiple classes if
             solo characters separated by strings or assertions, to preserve the
             exact sequencing semantics. Alternatively enforce some sequence,
             e.g. assertions, then quoted sequences, then solo characters.
-        Conditions: needed for completeness, but rare enough to defer
-        Named patterns/macros - Perl 5.10+, but probably rarely used
         
+        Conditions:
+            Needed for completeness, but rare enough to defer
+            
+        Named patterns/macros
+            Perl 5.10+, but probably rarely used.
+            Main value may be to support built-in or libraries of macros, such
+            as word, number, date or time. But they all have complex definitions,
+            so probably need variants and/or options. Plus matching anchors, at
+            least for word boundaries.
+            One way to provide flexibility is to have predefined definitions
+            for (say) word-anywhere-ch, word-embed-ch etc., define 'word' in
+            terms of those. and allow appending to or redefining the original
+            definitions.
+            Word and number boundaries can be difficult, especially if SI number
+            format (with spaces instead of commas) is supported and consecutive
+            numbers are allowed:
+               123 456,789    # One number in SI, two numbers otherwise
+               123 456.789    # One number in SI, two numbers otherwise
+            Would need to ensure stability of definitions, especially when
+            dynamic conversion of regexes is being used.
+
+            Macro definitions would have to decide whether they are 'anchored'.
+            Should a date macro always ensure that it does not follow and is not
+            followed by a digit or letter, so that strings containing (e.g.):
+                garbage14/11/2013  # 14/11/2013
+                14/11/201389       # 14/11/2013
+                14/11/2013abc      # 14/11/2013
+                42/11/2013         #  2/11/2013
+             do not match, as they would if unanchored?
+            The obscure cases where the user actually wants to allow these sorts
+            of values are likely to be outweighed by the risk that a user will
+            assume that they are excluded automatically. However, this is mostly
+            an issue to be decided by the writer of the definition, rather than
+            as a syntax issue.
+            
+            Basic Syntax:
+            
+                    define <name>
+                        <definition> # possibly multi-line
+                or:     
+                    define <name> <definition>                    
+                and later:
+                    <name>
+                where <definition> is treated as text 
+    
+                Example:
+                    define date
+                        two digits
+                        /
+                        two digits
+                        :
+                        two digits
+                        
+            Implementation:
+            
+                Nested calls of macros should be supported.
+                Nested definitions are probably not needed.
+                
+                Should it support alternations?
+                    as foo 'cat' date 'dog' time x
+                and/or the equivalent
+                    as foo 'cat' or date or 'dog' or time or x
+                which would need to be turned into something like:
+                    as foo
+                        either 'cat' 'dog' x
+                        or     date
+                        or     time
+                as an intermediate step in macro expansion.
+                
+                There is an argument that it should: literal strings are allowed
+                in alternations, so the fact that macros will often match
+                multiple characters should not matter.
+                
+            
+            Perl doesn't support having captures within the macro, or rather it
+            allows them but the captures are discarded. This prevents a macro
+            capturing multiple sub-fields, such as day, month and year within a
+            date macro.
+            
+            Possible approach 1:
+                Macro definition has named captures that each specify a suffix
+                that is applied to the overall capture name (if any) or are used
+                as the capture names if there is no overall capture name. E.g.
+                    define ddmmmyyyy
+                        as dd   two digits
+                        space
+                        as mmm  three letters
+                        space
+                        as yyyy  four digits
+                    # then later    
+                    as ship ddmmmyyyy 
+                    # would create named captures shipdd, shipmmm and shipyyyy
+                    ddmmmyyyy
+                    # would create named captures dd, mmm and yyyy
+                
+                .NET syntax with a leading hyphen (balanced) would need special
+                handling, but might be better done explicitly rather than just
+                by the formatting of the name.
+                
+            Possible approach 2:
+                Macro definition has named captures that each specify a suffix
+                that is applied to the overall capture name (if any) or are used
+                as the capture names if there is no overall capture name. E.g.
+                    define ddmmmyyyy
+                        as -dd   two digits
+                        space
+                        as -mmm  three letters
+                        space
+                        as -yyyy  four digits
+                    # then later    
+                    as ship ddmmmyyyy 
+                    # would create named captures shipdd, shipmmm and shipyyyy
+                    # as well as the overall capture ship.
+                    ddmmmyyyy
+                    # would create named captures dd, mmm and yyyy
+                
+                .NET syntax with a leading hyphen (balanced) could use two
+                leading hyphens, so --dd would produce -shipdd or -dd.
+                
+            The Perl semantics for which modes apply (e.g. the /imsx modes
+            where the macro was defined or where it is used) are not specified
+            in perlre, and anyway shouldn't determine the new notation.
+            Similarly the Perl recommendation that definitions go at the end
+            might get trumped by a requirement to define (or include) a macro
+            before use.
+            
+            
+            
+    Target: specifies language, version, options (e.g. /x mode)
+        Note: choosing a target mode should not affect the meaning of the
+        indented regex - it just controls how it will be implemented. There may
+        be variations in meaning due to limitations in some flavours, where they
+        cannot be overcome by generated workarounds.
 
         
     Not Strictly Required, but High Priority
@@ -3545,7 +4154,7 @@ To Do:
         Prettier output
              Getting trailing quantifiers on their own lines would be a good start
              
-        Make generted regexes closer to normal hand-written ones, e.g.
+        Make generated regexes closer to normal hand-written ones, e.g.
             opt whitespaces should produce \s* not (?:\s+)?
         
         Allow generation of regexes complete with bounding delimiters and any
@@ -3553,13 +4162,7 @@ To Do:
             / a .* \w /sux
           What about other modes such as g and c?
           
-        Change definition of 'digit', add keyword 'numeral'
-            'Digit' is always a plain ASCII arabic numeral in the range 0 to 9,
-              so it will be treated as a decimal digit by Perl
-            'Numeral' is the same as 'digit' when using ASCII ( /a mode).
-            'Numeral' is any character that has the Unicode property 'Number'
-               when using Unicode ( /u mode). The Unicode::UCD::num() function can convert
-               a series of numerals to the equivalent number
+
             What about /d mode and /l mode?
             
         Alternatives to 'not', e.g. 'anything except'
@@ -3584,9 +4187,7 @@ To Do:
           the check for atomicity is affected. The generated regex is still
           correct, just longer than necessary
 
-    Target: specifies language, version, options (e.g. /x mode)
-        Note: choosing a target mode does not affect the interpretation of the
-        indented regex - it just controls how it will be implemented
+
         
 
         
@@ -3602,7 +4203,7 @@ To Do:
             It is probably the fastest, and has security advantages (it won't
             treat Bengali digits as digits, for example).
             [Note that I have decided that 'digit' always means [0-9]], so you have
-             to use 'numeric' if you want to match all Unicode numerics]
+             to use 'numeral' if you want to match all Unicode numerics]
             This may have to be target-specific, as it may not be possible to
             guarantee ascii-only for all targets, although generating character
             classes rather than groups should be possible for all targets, e.g.
@@ -3618,19 +4219,27 @@ To Do:
     Implemented, more testing needed
         - Generate overall mode span to lock in modes, e.g. xms-i
         - Groups: make sure they all work, including character(s), char(s)
-        - Negated literals: not, except, non-, any but
+        - Negated literals: not, non-
         - Start/end of string/line and other matchers (word boundary/start/end,
             etc.), including mixtures with literals
-            
+
+        Change definition of 'digit', add keyword 'numeral'
+            (Done, but might need tweaking in conjunction with Unicode modes)
+            'Digit' is always a plain ASCII arabic numeral in the range 0 to 9,
+              so it will be treated as a decimal digit by Perl
+            'Numeral' is the same as 'digit' when using ASCII ( /a mode).
+            'Numeral' is any character that has the Unicode property 'Number'
+               when using Unicode ( /u mode). The Unicode::UCD::num() function
+               can convert a series of numerals to the equivalent number
+               
     Possible Extensions/Improvements
         
         - any/anything, any character, any character but/except, any-character
-        - Plurals
+           Implemented: any-character, any-ch. 'any' is a potential semantic
+           trap, as 'any letter' would actually mean any character.
         - Pretty output
-        - Unicode character names, e.g. 'unicode two women holding hands'
-        - 'or' as noiseword (when not first word on line)
-        - Quoted space means whitespace
-        - Other noisewords ('of', 'the', 'and/or' ... ???)
+        - Unicode character names, e.g. 'unicode-two-women-holding-hands' (which
+          illustrates the question of whether they should have plurals)
         - Generalised multi-word input (non-hyphenated)
         - Version numbers (like Perl 'use 5.12')
         - Change generated overall mode span to suit regex, e.g. for .*
@@ -3638,7 +4247,7 @@ To Do:
         - 'or more' or 'or more of' after a digit makes it a quantifier (e.g. 1 or more)
         - Refinement ('five of the letters a, b or c or the digits 1 through 7')
             where 'the letters' and 'the digits' are redundant
-        - Keyword 'literal', causing rest of line to be taken as quoted string
+
         
     Deferred Implementation
         Detect and flag as 'Unimplemented'
@@ -3712,7 +4321,7 @@ To Do:
         
             five digits  # exactly five digits
         
-        means something different from:
+        means something quite different from:
         
             five       # five occurences of...
                 digits #    one or more digits, so effectively 'five or more digits'

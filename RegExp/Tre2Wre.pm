@@ -23,14 +23,18 @@ TO DO:
 
 An extra right parenthesis stops processing: remainder of terse regex is ignored
 
+Lexical modes such as (?i) at the very start of a regex are ignored.
 
 
 Error Handling:
 
-    The current design is intended to be given a valid regex - the assumption
+    The original design was intended to be given a valid regex - the assumption
     is that whatever engine the regex was designed for will report any errors.
+    This is probably not a safe assumption, e.g. if users are supplying terse
+    regexes from non-Perl flavours: even when support is added for non-Perl
+    regexes they may not specify the correct flavour. 
     
-    Currently outputs error text as part of generated wordy.
+    Currently outputs error text as part of the generated wordy.
     Could also:
     - Keep track of line number and column position (in get_next_token?)
     - Report line/col with error message
@@ -44,7 +48,7 @@ Error Handling:
 Tokenise:
 
     Escaped sequence
-        Vary considerably between languages
+        Vary considerably between flavours
     Regex end delimiter (e.g. /)
 
     [ character class starts
@@ -225,6 +229,7 @@ my $TKST_NEG_LOOK_BEHIND = 'not preceding';
 my $TKST_ATOMIC          = 'possessive';
 my $TKST_NON_GREEDY      = 'minimal';
 my $TKST_CONDITION       = 'condition';
+my $TKST_BRANCH_RESET    = 'branch_reset';
 
 my $MODE_X  = 1;
 my $MODE_S  = 2;
@@ -238,8 +243,10 @@ my $MODE_A  = 256;
 my $MODE_AA = 512;  # Must be double the flag value for single a
 my $MODE_L  = 1024;
 my $MODE_U  = 2048;
-my $MODE_D  = 4096;
-my $MODE_ALL = ($MODE_D * 2 ) -1;
+my $MODE_D  = 4096; # Unicode legacy mode: default/dodgy
+my $MODE_NOT_I
+            = 8192; # Dummy mode used to mean 'turn /i mode off'
+my $MODE_ALL = ($MODE_NOT_I * 2 ) -1;
 
 
 my $LEXICAL_MODES  = 2;
@@ -250,9 +257,9 @@ my $ALL_MODES      = 0;
 # Other modes allowed (d, u, a, aa, l and p) can only be turned on, so they
 # use their normal mode bits.
 my $FORCE_MODE_NONE        = 0;
-my $FORCE_CASE_INSENSITIVE = $MODE_I; # 
-my $FORCE_CASE_SENSITIVE   = $MODE_G; # Re-use mode G to mean turn /i mode off,
-                                      # ensures no clashes
+my $FORCE_CASE_INSENSITIVE = $MODE_I; 
+my $FORCE_CASE_SENSITIVE   = $MODE_NOT_I;
+                                      
 
 
 
@@ -272,6 +279,7 @@ my %char_names = (
      "\\" => 'backslash',
      "\xA0" => 'no-break-space',
      "\xAD" => 'soft-hyphen',
+     "#"    => 'hash',
      ## Ordinary space could be included because it is a whitespace character,
      ## but if we convert all other whitespace to names (and we should) then we
      ## know that any whitespace within quotes is real spaces.
@@ -286,13 +294,13 @@ my %char_names = (
      "'"    => 'apostrophe',
      # Hyphen, so that it can't be confused with its use for ranges
      '-'  => 'hyphen',
-            ## Various other named characters which arguably might be better named than
-            ## appearing in an indented regex as naked characters - mostly because they
-            ## are meta-characters in conventional regexes.
-            ##  '.'  => 'dot',
-            ##  '/'  => 'slash',
-            ##  '*'  => 'asterisk',
-            ##  '+'  => 'plus',
+        ## Various other named characters which arguably might be better named than
+        ## appearing as naked characters - mostly because they are
+        ## meta-characters in conventional regexes.
+        ##  '.'  => 'dot',
+        ##  '/'  => 'slash',
+        ##  '*'  => 'asterisk',
+        ##  '+'  => 'plus',
     );
 
 my $generated_wre;
@@ -325,7 +333,8 @@ BEGIN { # Naked block for tokeniser
                                            R => 'generic-newline',
                    s => 'whitespace',      S => 'non-whitespace',
                    w => 'word-char',       W => 'non-word-char',
-                                           X => 'unicode-combo',
+                                            # Extended grapheme cluster
+                                           X => 'unicode-combo', 
                   );
     my %asserts = (                        A => 'start-of-string',
                    b => 'word-boundary',   B => 'non-word-boundary',
@@ -365,7 +374,7 @@ BEGIN { # Naked block for tokeniser
             # two or three octal digits
             ## We assume that \10 is octal, but it would be back-reference 10
             ## if more than 10 capture groups already seen
-            return ( 'char', 'octal' . $octal_digits );
+            return ( 'char', 'octal-' . $octal_digits );
         } elsif ( $re =~ / \G  x ( [0-9a-fA-F]{1,2} ) /xgc) {
             my $hex_digits = $1;
             # \x and one or two hex digits
@@ -380,9 +389,43 @@ BEGIN { # Naked block for tokeniser
             # \c and a letter
             my $control_letter = uc($1);
             return ( 'char', 'control-' . $control_letter );
+        ##} elsif ( $re =~ / \G  p ( [a-zA-Z] ) /xgc) {
+        ##    # \p and a letter
+        ##    my $control_letter = uc($1);
+        ##    return ( 'group', 'up-' . $control_letter );
+            
+        } elsif ( $re =~ / \G (p) [{] ( [^}]+ ) [}] /ixgc) {
+            # 'p' or 'P' and some stuff in curlies: it's a Unicode property
+            
+            my $p = $1;
+            my $property = $2;
+            my $negated = $p eq 'P';
+            if ( substr($property, 0, 1) eq '^') {
+                # Perl and PCRE: allow caret to negate a Unicode property
+                $negated = not $negated;    # Invert negation
+                $property = substr($property, 1);
+            }
+            if ($negated) {
+                # Upper-case p is negated 
+                return ('matcher', "non-unicode-property-$property" );
+            } else {
+                return ('matcher', "unicode-property-$property" );
+            }
+        } elsif ( $re =~ / \G (p) ( [LMZSNPC] ) /ixgc) {
+            # 'p' or 'P' and one appropriate letter: it's a Unicode property
+            # Perl and PCRE: allow this short form
+            my $p = $1;
+            my $property = $2;
+            if ($p eq 'P') {
+                # Upper-case p means negated 
+                return ('matcher', "non-unicode-property-$property" );
+            } else {
+                return ('matcher', "unicode-property-$property" );
+            }
+           
         } elsif ( $re =~ / \G ( [\\] ) /xgc ) {
             # Any other that is a meta-character within and outside char class
-            # Literal backslash... any others?
+            # Literal backslash... are there any others?
             $char = $1;
             return ('char', $char);
         } else {
@@ -441,7 +484,7 @@ BEGIN { # Naked block for tokeniser
                 return ('matcher', "backref-$payload" );
             }
         }
-        
+
         # \k{name}, \k<name> or \k'name' name must not begin with a number, nor contain hyphens
         
         if ( $re =~ / \G ( [R] ) /xgc ) {
@@ -450,9 +493,19 @@ BEGIN { # Naked block for tokeniser
             my $group_char = 'R';
             return ( 'group', $groups{$group_char} );
         }
+        
+        if ( $re =~ / \G ( [X] ) /xgc ) {
+
+            # Extended grapheme cluster
+            #  translates to 'unicode-combo' as the official name is too long
+            my $group_char = 'X';
+            return ( 'group', $groups{$group_char} );
+        }
+        
         $re =~ / \G ( . ) /xsgc;
         my $char = $1;
-        # Any other character - treat as the literal character
+        # Any other character -
+        #    Perl: treat as the literal character
         return ( 'char', $char );
         ##return ( 'unknown', '');
     }
@@ -619,8 +672,8 @@ BEGIN { # Naked block for tokeniser
                 my $mod = $1;
                 $tk_sub_type = $mod eq '?' ? $TKST_NON_GREEDY : $TKST_ATOMIC;
             }
-        } elsif ( ! $in_class && $re =~ / \G [(] \s* [?] ( [-imsxdualp]+ ) [)] /xgc ) {
-            # A non-spanning mode-modifier  (?imsxdualp-imsx)
+        } elsif ( ! $in_class && $re =~ / \G [(] \s* [?] ( [\-\^imsxdualp]+ ) [)] /xgc ) {
+            # A non-spanning mode-modifier  (?^imsxdualp-imsx)
             my $modes = $1;
             $token_type = 'mode_switch';
             $token = $modes;
@@ -640,6 +693,7 @@ BEGIN { # Naked block for tokeniser
             #   Named capture (?< name > ... ) or similar
             #   Atomic grouping (?> ... )
             #   Conditional (?( condition ) if | else )
+            #   Branch reset (?| (...) | (...) ) 
             
             ## There can be white-space and multi-line comments between the
             ## left parenthesis and the ?, as well as after the ?:
@@ -673,8 +727,8 @@ BEGIN { # Naked block for tokeniser
                 if (      $re =~ / \G :            /xgc ) {
                     #   Group-only (?: ... )
                     $tk_sub_type = $TKST_GROUP_ONLY;
-                } elsif ( $re =~ / \G ([-imsxdual]+ ) : /xgc ) {
-                    #   Mode-modified span (?imsxdual-imsx: ... )
+                } elsif ( $re =~ / \G ([\-\^imsxdual]+ ) : /xgc ) {
+                    #   Mode-modified span (?^imsxdual-imsx: ... )
                     my $mode = $1;
                     $tk_arg_a = $mode;
                     $tk_sub_type = $TKST_MODE_SPAN;
@@ -690,11 +744,37 @@ BEGIN { # Naked block for tokeniser
                 } elsif ( $re =~ / \G < !          /xgc ) {
                     #   -ve look-behind (?<! ... ) 
                     $tk_sub_type = $TKST_NEG_LOOK_BEHIND;
-                } elsif ( $re =~ / \G < ( \w+ ) >  /xgc ) {
-                    #   Named capture (?< name > ... ) ### or variants
+                } elsif ( $re =~ / \G
+                                      < ( \w+ ) >
+                                /xgc ) {
+                    #   Perl Named capture (?<name> ... ) 
                     $tk_arg_a = $1;
                     $tk_sub_type = $TKST_CAPTURE_NAMED;
                     $capture_count++;
+                } elsif ( $re =~ / \G
+                                      < (      [a-z] [a-z0-9]*
+                                         (?: - [a-z] [a-z0-9]* )
+                                        ) >
+                                /xgci ) {
+                    #   .NET Named capture (?<name> ... )
+                    #     allowing balanced capturing group names
+                    $tk_arg_a = $1;
+                    $tk_sub_type = $TKST_CAPTURE_NAMED;
+                    $capture_count++;                    
+                } elsif ( $re =~ / \G
+                                      ' ( \w+ ) '
+                                /xgc ) {
+                    #   Named capture (?'name' ... ) 
+                    $tk_arg_a = $1;
+                    $tk_sub_type = $TKST_CAPTURE_NAMED;
+                    $capture_count++;
+                } elsif ( $re =~ / \G
+                                      P< ( \w+ ) >
+                                /xgc ) {
+                    #   Named capture (?< name > ... )  Python-style
+                    $tk_arg_a = $1;
+                    $tk_sub_type = $TKST_CAPTURE_NAMED;
+                    $capture_count++;                    
                 } elsif ( $re =~ / \G >            /xgc ) {
                     #   Atomic grouping (?> ... )
                     $tk_sub_type = $TKST_ATOMIC;
@@ -702,8 +782,16 @@ BEGIN { # Naked block for tokeniser
                     #   Conditional (?( condition ) if | else )
                     $tk_sub_type = $TKST_CONDITION;
                     $tk_arg_a = $1;
+                } elsif ($re =~ / \G [|]           /xgc )  {
+                    # Branch reset  (?|  (...) | (...) )
+                    $tk_sub_type = $TKST_BRANCH_RESET;
                 } else {
-                    _error("Unrecognised option after (?");
+                    if ( $re =~ / ( .{0,20}? ) (?: [\#:)\n] | $ ) /xgc) {
+                        # lazy 0 to 20 characters, followed by # : or newline or eos
+                        _error("Unrecognised option $1 after (?");
+                    } else {
+                        _error("Unrecognised option after (?");
+                    }
                 }
             }
         } elsif ( ! $in_class && $re =~ / \G [)] /xgc ) {
@@ -798,6 +886,11 @@ regex: the exceptions are c, g and o.
         l => $MODE_L, 
         x => $MODE_X, s => $MODE_S, m => $MODE_M,  i => $MODE_I,
         };
+    my $after_caret_modes_ref = {
+                      u => $MODE_U, A => $MODE_AA, a => $MODE_A,
+        l => $MODE_L, 
+        x => $MODE_X, s => $MODE_S, m => $MODE_M,  i => $MODE_I,
+    };
     my $all_modes_ref = {
         d => $MODE_D, u => $MODE_U, A => $MODE_AA, a => $MODE_A,
         l => $MODE_L,
@@ -812,33 +905,70 @@ regex: the exceptions are c, g and o.
           : ($allowed_modes_code == $LEXICAL_MODES)  ? $lexical_modes_ref 
           : ($allowed_modes_code == $ALL_MODES)      ? $all_modes_ref : {};
     my $check_bits = 0;
-    for my $mode_char (split ('',$mode_flags_text)) {
-        if ($mode_char eq '-') {
-            $hyphen_seen = 1;
-        } else {
-            my $mode_bit = $allowed_modes_ref->{$mode_char};
-            if (defined $mode_bit) {
-                if ($check_bits & $mode_bit) {
-                    # We have already seen this bit
-                    $mode_char =~ s/A/aa/;
-                    _error("Mode: $mode_char used more than once")
+
+
+    if (substr($mode_flags_text, 0, 1) eq '^' ) {
+        # First mode flag is ^
+        #   - hyphen is not allowed
+        #   - flags are assumed to be d-imsx unless explicitly over-ridden,
+        #     so ^u would turn x off if it was already on
+        #   -
+        if ( not ($previous_mode_bits & $MODE_D ) ) {
+            # Not already mode d, so force it on
+            $positive_bits = $MODE_D;
+        }
+        $negative_bits = $MODE_I | $MODE_M | $MODE_S | $MODE_X;
+        for my $mode_char ( split ('', substr($mode_flags_text, 1) ) ) {
+            my $mode_bit = $after_caret_modes_ref->{$mode_char};
+                if (defined $mode_bit) {
+                    # Turn on the corresponding positive bit
+                    $positive_bits |= $mode_bit;
+                    # Turn off default d mode
+                    $positive_bits &= $MODE_ALL ^ $MODE_D;
+                    # Ensure the corresponding negative bit is off
+                    $negative_bits &= $MODE_ALL ^ $mode_bit;
                 } else {
-                    $check_bits |= $mode_bit;
-                    if ($hyphen_seen) {
-                        if ($mode_bit & $can_be_negated) {
-                            $negative_bits |= $mode_bit;
-                        } else {
-                            _error("Mode $mode_char is not allowed to be negated");
-                        }
-                    } else {
-                        $positive_bits |= $mode_bit;
-                    }
+                    _error("Unrecognised mode: $mode_char in $mode_flags_text");
                 }
+        }
+    } else {
+        for my $mode_char ( split ('', $mode_flags_text) ) {
+    
+            if ($mode_char eq '-') {
+                $hyphen_seen = 1;
             } else {
-                _error("Unrecognised mode: $mode_char in $mode_flags_text");
+                my $mode_bit = $allowed_modes_ref->{$mode_char};
+                if (defined $mode_bit) {
+                    if ($check_bits & $mode_bit) {
+                        # We have already seen this bit
+                        $mode_char =~ s/A/aa/;
+                        _error("Mode: $mode_char used more than once")
+                    } else {
+                        $check_bits |= $mode_bit;
+                        if ($hyphen_seen) {
+                            if ($mode_bit & $can_be_negated) {
+                                $negative_bits |= $mode_bit;
+                            } else {
+                                _error("Mode $mode_char is not allowed to be negated");
+                            }
+                        } else {
+                            $positive_bits |= $mode_bit;
+                        }
+                    }
+                } else {
+                    _error("Unrecognised mode: $mode_char in $mode_flags_text");
+                }
             }
         }
     }
+    my $uni_bits = $MODE_D | $MODE_U | $MODE_AA | $MODE_A | $MODE_L;
+    my $positive_uni_bits = $positive_bits & $uni_bits;
+    if ($positive_uni_bits) {
+        # We are explicitly turning on one of the unicode-mode bits (d/u/a/aa/l)
+        # So we need to force the others off
+        $negative_bits = $uni_bits ^ $positive_uni_bits;
+    }
+    
     my $result_bits = $previous_mode_bits | $positive_bits;
     
     my $negative_mask = $MODE_ALL ^ $negative_bits;
@@ -861,17 +991,11 @@ sub tre_to_wre {
     analyse_regex($root_ref, $updated_mode_bits, 0);
     combine_strings($regex_struct_ref);
     analyse_alts($regex_struct_ref);
-    generate_wre($regex_struct_ref, 0);
+    generate_wre($regex_struct_ref, 0, $updated_mode_bits);
     return $generated_wre;
 }
 
-sub main {
-    load_tests();
-    for my $regex_ref (@test_regex) {
-        test_gen (@{$regex_ref});
-    }
-    my $done_gen = 1;
-}
+
 
 # -------------------------------
 sub add_to_generated {
@@ -1081,17 +1205,31 @@ sub generate_non_captures {
         #} elsif ($modes =~ /  [^-]* [i] /x) {
         #    return 'case-insensitive ';
         }
+        return $mode_text . $sp;
     } elsif ($sub_type eq $TKST_CONDITION) {
-        _error("Unimplemented: condition within regex")
+        _error("Unimplemented: condition within regex");
+        return "error ";
     } elsif (   $sub_type eq $TKST_LOOK_AHEAD
              || $sub_type eq $TKST_NEG_LOOK_AHEAD
              || $sub_type eq $TKST_LOOK_BEHIND
              || $sub_type eq $TKST_NEG_LOOK_BEHIND
              || $sub_type eq $TKST_ATOMIC
+             || $sub_type eq $TKST_BRANCH_RESET
              ) {
-        # look-ahead, look-behind , atomic
+        # look-ahead, look-behind , atomic, etc.
          return $sub_type . $sp;
+    } elsif ($sub_type eq $TKST_CAPTURE_ANON
+             || $sub_type eq $TKST_CAPTURE_NAMED) {
+        # Anonymous or named capture needs no action here
+        return '';
+    } elsif ($sub_type eq $TKST_GROUP_ONLY) {
+        # No action
+        return '';
+    } elsif ($sub_type) {
+        _error("Internal error sub_type: $sub_type, in generate_non-captures()");
+        return "error ";
     }
+
 }
 # -------------------------------
 sub generate_stuff_from_entry {
@@ -1212,8 +1350,21 @@ sub generate_stuff_from_entry {
     sub generate_wre {
         
         # Generates an indented regular expression
-        my ($hash_ref, $indent_level, $modes_ref) = @_;
+        my ($hash_ref, $indent_level, $modes) = @_;
+        
+        # The only mode acted on here (currently) is /i (case-insensitive)
+        # Modes /x, /m and /s are used when parsing the terse regex
+        
+        # Unicode modes ( /d /u /a /aa /l ) may also be need support here. For
+        # example, \w in the terse regex input will generate 'word-ch' in the
+        # wordy, but word-ch may change meaning depending on the Unicode mode.
 
+        my $modes_text = _mode_text(($modes || 0) & ( $MODE_I | $MODE_D  | $MODE_U
+                                                    | $MODE_A | $MODE_AA | $MODE_L));
+        if ($modes_text) {
+            $line .= $modes_text;
+            emit_line($indent_level++);
+        }
         my $child_ref = $hash_ref->{child};
         if ( ! defined $child_ref ) {
             # There is no child entry
@@ -1269,9 +1420,12 @@ sub generate_stuff_from_entry {
             $indent_level++;        # Move everything over
             $current_indent = $indent_level;
         }
+        ALTERNATIVE:
         for my $alt_index (0 .. ($number_of_alternatives - 1) ) {
             # For each alternative
+          
             my $alt_ref = $child_ref->[$alt_index];
+            next ALTERNATIVE unless defined $alt_ref;
             my $number_of_entries = scalar @{$alt_ref};
             # We need to know whether there will be multiple lines
             # If there is only one non-removed entry and it is not type
@@ -1443,13 +1597,18 @@ sub generate_stuff_from_entry {
     #  'abc' or 'def' or (p then digits then q) or x or y or z
     #
     # time=hh:mm
-    # 'time=' then (as hh two digits) then : then (asmm two digits)
+    #  No parentheses needed
+    # 'time=' then  as hh  two digits  then : then  as mm  two digits
+    # 'time=' then (as hh  two digits) then : then (as mm  two digits)
+    # 'time=' then  as hh (two digits) then : then  as mm (two digits)
     # 'time='
     # as hh two digits
     # :
     # as mm two digits
     
-    
+    # time=hh:mm
+    #  Parentheses needed, otherwise hhmm only captures the first two characters
+    # as hhmm (two digits then : then two digits)
 
     
 
@@ -1462,16 +1621,17 @@ sub _error {
 
 # -------------------------------
 sub _mode_text {
-    # Passed a force-mode value 
+    # Passed a mode text value 
     # Returns the text to go into the wre
-    my ($force_mode) = @_;
+    my ($mode_bits) = @_;
     my $mode_text = '';
-    $mode_text .= 'case-sensitive '   if $force_mode & $FORCE_CASE_SENSITIVE;
-    $mode_text .= 'case-insensitive ' if $force_mode & $FORCE_CASE_INSENSITIVE;
-    $mode_text .= 'legacy-unicode '   if $force_mode & $MODE_D;
-    $mode_text .= 'full-unicode '     if $force_mode & $MODE_U;
-    $mode_text .= 'ascii '            if $force_mode & $MODE_A;
-    $mode_text .= 'ascii-all '        if $force_mode & $MODE_AA;
+    $mode_text .= 'case-sensitive '   if $mode_bits & $MODE_NOT_I;
+    $mode_text .= 'case-insensitive ' if $mode_bits & $MODE_I;
+    $mode_text .= 'legacy-unicode '   if $mode_bits & $MODE_D;
+    $mode_text .= 'full-unicode '     if $mode_bits & $MODE_U;
+    $mode_text .= 'ascii '            if $mode_bits & $MODE_A;
+    $mode_text .= 'ascii-all '        if $mode_bits & $MODE_AA;
+    $mode_text .= 'locale-specific '  if $mode_bits & $MODE_L;
     return $mode_text;
     
 }
@@ -1480,6 +1640,29 @@ sub is_combinable_string {
     # Passed a reference to an entry
     # Returns true if the entry is for something that can be combined with
     # other strings to form a quoted string
+    
+    # There are multiple categories:
+    #   - simple characters (e.g. a 5 7) which can always be combined
+    #   - groups ( e.g. digits ) which cannot be represented in quoted strings
+    #   - characters that do have names, but which are always allowed in
+    #      within quoted strings (e.g. plus equal asterisk slash + = * /)
+    #   - strings that have combinations that do not work in a wre, e.g. the
+    #     string:
+    #          q '  "
+    #     that has single and double quotes, both immediately followed by spaces
+    #     has to become:
+    #         "q ' " then double-quote
+    #     or
+    #         q then space then apostrophe then space then double-quote
+    #     or
+    #         "q ' "
+    #         "
+    #   - quote characters that could be combined into quoted literal, but are
+    #      best generated using names, e.g.
+    #         ''    #   better as: two apostrophes
+    #               # rather than: "''"
+    #         '"'   #   better as: apostrophe then double-quote then apostrophe
+    #               # rather than: "'"'"
     my ($entry_ref) = @_;
     
     if ( $entry_ref->{type} eq 'string') {
@@ -1532,12 +1715,49 @@ sub combine_strings {
     #   removed.
     #   Any entry that has combined strings is changed to type 'combo'
     
+    # To Do:
+    #   ?? Recognise situations where it's better to put a character into a
+    #   ?? string literal, rather than used the character's name, e.g.
+    #   ??   ab-cd is better as
+    #       'ab-cd'
+    #   than
+    #       'ab'
+    #       hyphen
+    #       'cd'
+    #
+    #   Recognise consecutive named characters, e.g.
+    #   """
+    #   is better as
+    #       three double-quotes
+    #   or even
+    #       '"""'
+    #   than
+    #       double-quote
+    #       double-quote
+    #       double-quote
+    #
+    #   Handle simple or mixed quotes where possible, e.g.
+    #       "Mrs O'Grady"
+    #   should generate
+    #       '"Mrs O'Grady"'
+    #   not
+    #       double-quote
+    #       'Mrs O'
+    #       apostrophe
+    #       'Grady'
+    #       double-quote
+    
+    
     my ($hash_ref) = @_;
     my $child_ref = $hash_ref->{child};
     if ( defined $child_ref ) {
         # There is a child entry
         # For each alternative
+        ALTERNATIVE:
         for my $alt_ref ( @{$child_ref} ) {
+            if ( ! defined $alt_ref) {
+                next ALTERNATIVE;
+            }
             my $number_of_entries = scalar @{$alt_ref};
             my $a = 0;
             my $b = 1;
@@ -1615,10 +1835,13 @@ sub analyse_alts {
         
         my $number_of_alternatives = scalar @{$child_ref};
         my $number_of_qualifying_alts = 0;
-        
+        ALTERNATIVE:
         for my $alt_ref ( @{$child_ref} ) {
             # For each alternative, we must have exactly one qualifying entry 
             # and no disqualifying entries for the entire alternative to qualify
+            if ( ! defined $alt_ref) {
+                next ALTERNATIVE;
+            }
             my $entry_qualifiers = 0;
             my $entry_disqualifiers = 0;
             my $number_of_entries = scalar @{$alt_ref};
@@ -1826,7 +2049,7 @@ sub analyse_regex {
         } elsif ($token_type eq 'paren_end') {
             # Right parenthesis, other goodies such as quantifiers and their
             # modifiers may follow, but not yet parsed
-            if ($depth ==1) {
+            if ($depth == 1) {
                 _error("Unbalanced parentheses");
             }
             return 0;  #---->>
@@ -1862,6 +2085,7 @@ sub analyse_regex {
             
             # For i and d/u/a/l, it's messier. We set or clear the mode bits
             # here, and set the value to do the rest later
+            
             
             my $new_mode_bits = apply_modes(0,          $tk_arg_a, $LEXICAL_MODES);
             $mode_bits        = apply_modes($mode_bits, $tk_arg_a, $LEXICAL_MODES);
@@ -1913,6 +2137,74 @@ sub analyse_regex {
         }
     }
 }
+
+
+
+sub main {
+
+
+
+    # Reads terse regexes from a file or stdin .
+    # Use control-D to terminate input
+    # Use /n.../n to separate terse regexes
+    # Use Perl / regex /imsx notation for modes
+    
+    my $stdin = $ARGV[0];
+    if ($stdin eq '-') {
+        print "Use Control-D to finish\nUse ... to separate regexes\n\n";
+    }
+    
+    
+    my $terse = '';
+    
+    while (<>) {
+        if ( m{ \A [.][.][.] \s* \Z }x ) {
+            # End of a terse
+            _handle_terse($terse);
+            print "Enter next regex terminated with ...\nor control-D to finish\n";
+            $terse = '';
+        } else {
+            $terse .= $_;
+        }
+    }
+    if ($terse =~ m{ \S }x) {
+        _handle_terse($terse);
+    }
+}
+#-------------------------------------------------
+sub _handle_terse {
+    my ($terse_in) = @_;
+    chomp $terse_in;
+    my $modes = '';
+    my $terse;
+    if ($terse_in eq 'builtin') {
+        _builtin_tests();
+    } else {
+        if (substr($terse_in, 0, 1) eq '/') {
+            # Perl-style regex in /regex/modes format
+            ($terse, $modes) =  $terse_in =~ m{ \A  \/ (.*) \/ ( [ismxdual-]* ) \z }x;
+        } elsif (substr($terse_in, 0, 1) eq '~') {
+            # Perl-style regex in ~regex~modes format
+            ($terse, $modes) =  $terse_in =~ m{ \A  ~ (.*)  ~ ( [ismxdual-]* ) \z }x;
+        } else {
+            $terse = $terse_in;
+        }
+        my $wre = tre_to_wre($terse, $modes);
+        print "\nterse:\n$terse\n\nwordy:\n$wre\n";
+    }
+}
+#-------------------------------------------------
+sub _builtin_tests {
+        
+    load_tests();
+
+    for my $regex_ref (@test_regex) {
+        test_gen (@{$regex_ref});
+    }
+    my $done_gen = 1;
+    
+}
+
 =format
 TO DO:
 
@@ -1936,7 +2228,12 @@ TO DO:
             then it's not appropriate to generate this, but we should accept it
             in conventional regex input. Syntax looks messy to distinguish from
             named/numbered Unicode. Need to check whether it is used in other
-            flovours.
+            flavours.
+
+            PCRE: The escape sequence \N behaves like a dot, except that it is not
+            affected by the PCRE_DOTALL option.  In other words, it matches any
+            character except one that signifies the end of a line. Perl also uses
+            \N to match characters by name; PCRE does not support this.
 
 \px, \Px    Unicode property, where x is single letter
 \p{name}
@@ -1946,7 +2243,85 @@ TO DO:
     Capture Number Checking.
         Warn if a round-tripped regex will have its capture numbers disturbed.
 
-    Interpolation:
+    
+
+MODES
+  On the regex itself (e.g. after ending / when m/.../ notation used)
+    m  Multiline mode: ^ and $ match internal lines
+    s  match as a Single line: . matches \n
+    i  case-Insensitive
+    x  eXtended legibility: free whitespace and comments
+    p  Preserve a copy of the matched string: ${^PREMATCH}, ${^MATCH},
+       ${^POSTMATCH} will be defined.
+    o  compile pattern Once
+    g  Global - all occurrences. You can use \G within regex for end-of-previous-match
+    c  don't reset pos on failed matches when using /g
+    a  restrict \d, \s, \w and [:posix:] to match ASCII only
+    aa (two a's) also /i matches exclude ASCII/non-ASCII
+    l  match according to current locale
+    u  match according to Unicode rules
+    d  match according to native rules unless something indicates Unicode (This
+         might be what Perl did by default prior to version 5.10)
+
+
+\K          see Regexp::Keep. Probably can be handled in the same way as
+            zero-width assertions: give it a keyword and generate /K when we
+            see it in an wre when we are generating conventional regex.
+
+\h, \H      Horizontal whitespace, or not
+\v, \V      Vertical whitespace, or not
+
+\C          One byte
+\X          Unicode extended grapheme cluster (base + any modifying characters)
+
+
+# \X extended grapheme cluster: Perl & PCRE
+
+
+
+
+Named Patterns (perl 5.10+)
+    Define sub-regex with (?(DEFINE) (?<name>pattern)... ) where the < and >
+    around the name must be present. This is a special case of (?(cond)...)
+    
+    Use the sub-pattern (earlier or later!) using (?&name)
+    Example:
+        /^ (?&osg) [ ]* ( (?&int)(?&dec)? | (?&dec) )
+            (?: [eE](?&osg)(?&int) )?
+        $
+        (?(DEFINE)
+            (?<osg>[-+]?)         # optional sign
+            (?<int>\d++)          # integer
+            (?<dec>\.(?&int))     # decimal fraction
+        )/x
+
+    IRE's will need their own keywords for this: maybe 'define as name' and
+    'use name'. It would be possible for 'define' to add the defined name as a
+    keyword, so that just the bare name invokes it - it is shorter, and avoids
+    the cognitive clash with the Perl 'use'.
+    
+    The semantics could be largely macro-like: paste in the defined text at the
+    point of use.
+    
+    Does it imply the need for an extra pass? Probably not in this module, as
+    long as we can assume that any name used will eventally be defined (and we
+    can report an error if not).
+
+    Lexical Mode Spans
+        Modes such as (?x)  or (?-i): implemented, but assuming Perl syntax
+        In Perl, they "only affect the regexp inside the group the embedded modifier
+        is contained in" according to perlretut.
+        Check for exact effect in other flavours.
+            Perl: rest of sub-expression (?xsmi) (?-xsmi)
+            Java: rest of sub-expression (?xsmidu) (?-xsmidu)
+                    d = treat \n as the only line terminator
+                    u = case-insensitive match for Unicode characters
+            .NET: rest of sub-expression (?xsmin) (?-xsmin)
+                    n = plain parentheses do not capture
+            Python: entire regexp (?iLmsux), so no negation needed
+    
+
+Interpolation:
         The crudest approach is to only handle the regex after interpolation has
         been done. But if the interpolation is dynamic, this isn't a useful
         option: the user wants to know the indented regex that will provide the
@@ -2027,80 +2402,8 @@ TO DO:
          regexp. Not sure if this will allow much simplification - but it might
          allow for a tidier oo version.
             
-
-
-MODES
-  On the regex itself (e.g. after ending / when m/.../ notation used)
-    m  Multiline mode: ^ and $ match internal lines
-    s  match as a Single line: . matches \n
-    i  case-Insensitive
-    x  eXtended legibility: free whitespace and comments
-    p  Preserve a copy of the matched string: ${^PREMATCH}, ${^MATCH},
-       ${^POSTMATCH} will be defined.
-    o  compile pattern Once
-    g  Global - all occurrences. You can use \G within regex for end-of-previous-match
-    c  don't reset pos on failed matches when using /g
-    a  restrict \d, \s, \w and [:posix:] to match ASCII only
-    aa (two a's) also /i matches exclude ASCII/non-ASCII
-    l  match according to current locale
-    u  match according to Unicode rules
-    d  match according to native rules unless something indicates Unicode (This
-         might be what Perl did by default prior to version 5.10)
-
-
-\K          see Regexp::Keep. Probably can be handled in the same way as
-            zero-width assertions: give it a keyword and generate /K when we
-            see it in an wre when we are generating conventional regex.
-
-\h, \H      Horizontal whitespace, or not
-\v, \V      Vertical whitespace, or not
-
-\C          One byte
-\X          Unicode extended grapheme cluster (base + any modifying characters)
-
-
-
-
-
-Named Patterns (perl 5.10+)
-    Define sub-regex with (?(DEFINE) (?<name>pattern)... ) where the < and >
-    around the name must be present. This is a special case of (?(cond)...)
     
-    Use the sub-pattern (earlier or later!) using (?&name)
-    Example:
-        /^ (?&osg) [ ]* ( (?&int)(?&dec)? | (?&dec) )
-            (?: [eE](?&osg)(?&int) )?
-        $
-        (?(DEFINE)
-            (?<osg>[-+]?)         # optional sign
-            (?<int>\d++)          # integer
-            (?<dec>\.(?&int))     # decimal fraction
-        )/x
-
-    IRE's will need their own keywords for this: maybe 'define as name' and
-    'use name'. It would be possible for 'define' to add the defined name as a
-    keyword, so that just the bare name invokes it - it is shorter, and avoids
-    the cognitive clash with the Perl 'use'.
     
-    The semantics could be largely macro-like: paste in the defined text at the
-    point of use.
-    
-    Does it imply the need for an extra pass? Probably not in this module, as
-    long as we can assume that any name used will eventally be defined (and we
-    can report an error if not).
-
-    Lexical Mode Spans
-        Modes such as (?x)  or (?-i): implemented, but assuming Perl syntax
-        In Perl, they "only affect the regexp inside the group the embedded modifier
-        is contained in" according to perlretut.
-        Check for exact effect in other flavours.
-            Perl: rest of sub-expression (?xsmi) (?-xsmi)
-            Java: rest of sub-expression (?xsmidu) (?-xsmidu)
-                    d = treat \n as the only line terminator
-                    u = case-insensitive match for Unicode characters
-            .NET: rest of sub-expression (?xsmin) (?-xsmin)
-                    n = plain parentheses do not capture
-            Python: entire regexp (?iLmsux), so no negation needed
     
 Mode-Modified Spans and Regex Literals
 --------------------------------------
@@ -2264,7 +2567,7 @@ Derek Mead
 
 =head1 COPYRIGHT
 
-Copyright (c) 2011, 2012 Derek Mead
+Copyright (c) 2011, 2012, 2013 Derek Mead
 
 This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.
@@ -2638,7 +2941,7 @@ space-means-wss
         print     "        - name: Test $test_number\n";
         $terse_regex =~ s/\n/\n              /g;
         $terse_regex =~  s/^/\n              /g;        
-        print     "          terse: |$terse_regex\n";
+        print     "          terse-in: |$terse_regex\n";
         print     "          terse-options: $mode_flags\n";
         if ($notes) {
             $notes =~   s/\n/\n              /g;
@@ -2648,7 +2951,7 @@ space-means-wss
 
         $wre =~         s/\n/\n              /g;
         $wre =~          s/^/\n              /g;
-        print     "          wordy: |$wre\n";
+        print     "          wordy-out: |$wre\n";
         $test_number++;
     }
 }
