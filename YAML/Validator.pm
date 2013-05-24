@@ -20,11 +20,22 @@
 #
 # (2) Unload functionality improved
 #   The still-somewhat-experimental unload method now has the ability to unload
-#   tables in the YAML-extended foramt that the load functions accept.
+#   tables in the YAML-extended format that the load functions accept.
 #   The current version exports a table as an array of strings, which is acceptable
 #   but different from the multi-line text block that may be the most popular
 #   format for tables.
-
+#
+# (3) Support for data type timestamp (a date followed by a time)
+#
+# (4) CSV format input and output.
+#       csv: boolean
+#       csv_with_header: boolean
+#       unload_format: csv | csv_with_header
+#     The expected method of use for csv input is to define the csv file as a table.
+#     The file contents are then loaded into an array of hashes, with keys
+#       based on column name, with any validation errors reported.
+#     The unload method and the unload_data function allow a table (i.e. an
+#       array of hashes) to be unloaded into csv format
 
 
 # IMPENDING CHANGES WARNING:
@@ -53,7 +64,7 @@ my $this_package_name = 'YAML::Validator';
 require Exporter;
 use vars qw(@ISA @EXPORT_OK $YAML_LIB);   # Support ancient Perl!
 (@ISA) = ("Exporter");
-(@EXPORT_OK) = qw(errors_in_data load_and_validate);
+(@EXPORT_OK) = qw(errors_in_data load_and_validate unload_data);
 
 use strict;
 use warnings;
@@ -1169,7 +1180,10 @@ sub load_data {
         # Validate
         
         my ($data_updated_ref, $arg_error_text);
-       ($arg_error_text, $data_updated_ref) = _accept_or_parse_arg($data);
+        my $csv_option = $updated_options_ref->{csv_with_header} ? 'header'
+                       : $updated_options_ref->{csv}             ? 'no_header'
+                       : 0;
+       ($arg_error_text, $data_updated_ref) = _accept_or_parse_arg($data, $csv_option);
     
         if ($arg_error_text) {
             $self->{'data-errors'} = [$arg_error_text];
@@ -1742,9 +1756,7 @@ sub errors_in_data {
     
     my ($data_updated_ref, $schema_updated_ref, $arg_error_text);
     
-    ($arg_error_text, $data_updated_ref) = _accept_or_parse_arg($data);
-    
-    return $arg_error_text if $arg_error_text;
+
     my @error_array = ();    # empty array of error messages
     my $global_anchors_ref;
     my $err;
@@ -1758,6 +1770,10 @@ sub errors_in_data {
     }
     my ($schema_ref, $updated_options_ref, $anchors_ref) =
      _setup_schema($schema, $opts_ref, $defaults_sub_ref->(), \@error_array );
+     
+    my $csv_option = $updated_options_ref->{csv} || 0;
+    ($arg_error_text, $data_updated_ref) = _accept_or_parse_arg($data, $csv_option);
+    return $arg_error_text if $arg_error_text;
     
     if (scalar @error_array == 0) {
         # Validate the data against the schema
@@ -1793,15 +1809,17 @@ sub _accept_or_parse_arg {
     # Strings are treated as being YAML text, and loaded into a structure
     #
     # Passed:
-    #   A structure or string or glob
-    #   A boolean indicating whether comments should be stripped
+    #   1) A structure or string or glob
+    #   2) A flag: 'header' means csv with a header line that will be ignored
+    #              'no_header' means csv with no header line
+    #              false means not csv
     #
     # Returns:
     #   1) Result: null if OK, error text if not
     #   2) A reference to the converted structure
 
     
-    my ($arg) = @_;
+    my ($arg, $csv_option) = @_;
 
     my $scalar;
     my $RESULT_UNRECOGNISED_ARGUMENT = 'unrecognised argument';
@@ -1838,6 +1856,8 @@ sub _accept_or_parse_arg {
     # We have a scalar of some sort
     # If it's a string starting with "<" with no newlines and no ">"
     #   use it as a filename
+    # If csv option is true,
+    #   just leave it as a raw scalar (possibly trimming header line)
     # If it's a string containing some sort of line breaks (not necessarily the
     #   standard newlines for this platform, because it might be a YAML file
     #   using a different newline convention), try parsing it as YAML data
@@ -1875,8 +1895,17 @@ sub _accept_or_parse_arg {
             };
             close INP;
         }
-    $scalar_has_newline = 1;
+        $scalar_has_newline = 1;
     }
+    
+    if ($csv_option) {
+        if ($csv_option eq 'header') {
+            # Expecting header - just ignore it
+            $scalar =~ s/ [^\n]* \n //x;
+        }
+        return ($err, $scalar);
+    }
+    
     if ($scalar_has_newline ) {
         # scalar has newline(s)
         # treat it as YAML
@@ -1899,6 +1928,7 @@ sub _accept_or_parse_arg {
         }    
     } else {
         # scalar has no newlines
+        
         if ( $scalar_has_leading_lt && 0 && 0 && 0 && 0 && 0 && 0 ) {
     
             ## Missing code to handle file?
@@ -2797,8 +2827,10 @@ sub _is_structure_invalid {
             # Split the scalar into chunks
             
             my $scalar_data = $data_ref;    # It is not a reference, name it better
-            
-            my $split_data_ref = _split_scalar($scalar_data);
+            my $csv_lines_split = $opts_ref->{csv} || $opts_ref ->{csv_with_header};
+            my $split_data_ref
+                = _split_scalar($scalar_data,
+                                    {newlines => $csv_lines_split} );
             if ($option_update) {
                 # Update the data in place
                 $$modifiable_ref  = $split_data_ref;
@@ -2904,8 +2936,11 @@ sub _is_structure_invalid {
             # Split the scalar into chunks using complicated delimiter rules
             
             my $scalar_data = $data_ref;    # It is not a reference
-            
-            my $split_data_ref = _split_scalar($scalar_data);
+            my $csv_opt     = $opts_ref->{csv}
+                              || $opts_ref->{csv_with_header};
+            my $split_data_ref
+                 = _split_scalar($scalar_data,
+                                 {csv_commas => $csv_opt} );
             if ($option_update) {
                 # Update the data in place
                 $$modifiable_ref  = $split_data_ref;
@@ -3185,7 +3220,7 @@ sub _update_timestamp {
     
     # Initial version
     # Assumes date occurs before time
-    # Assumes date has no embedded spaces
+    # Assumes time has no embedded spaces
     
     my ($call_type, $data, $option_text_ext, $option_text_int ) = @_;
     my $error_text;
@@ -3195,11 +3230,13 @@ sub _update_timestamp {
         # If not, just return original field
         # If valid, update to yyyy-mm-dd hh:mm:ss format
         
-        my ($date_part, $time_part) = split( / \s+ /x, $data, 2);
+        ##my ($date_part, $time_part) = split( / \s+ /x, $data, 2);
+        my ($date_part, $time_part) = $data =~ /((?:\S+\s+)+)(\S+)/;
+        $date_part =~ s/ \s+ $//x;
         my $relaxed_date = _update_date($call_type, $date_part,
                                         $option_text_ext, $option_text_int);
         my $relaxed_time = _update_time($call_type, $time_part,
-                                        $option_text_ext, $option_text_int);
+                                        $option_text_ext, $option_text_int) || '';
         return $relaxed_date . ' ' . $relaxed_time;
     } else {
         # After
@@ -3248,18 +3285,27 @@ sub _do_nothing {}
 sub _split_scalar {
     #
     # Passed: a scalar to split
-    #       : options to control splitting ## None implemented
+    #       : options to control splitting 
+    #            newlines:   boolean = split using only newlines
+    #            csv_commas: boolean = split using commas
     # Returns: a reference to an array of fields within the scalar
     
     my ($scalar, $opt_ref) = @_;
     my $split_complete = 0;
     
     $scalar =~ s/ \s+ $ //x; # Trim trailing white space
+    ##$scalar =~ s/ [ ]+ $ //x; # Trim trailing spaces
     $scalar =~ s/^ [\s]* \n //mgx; # Excise blank lines
     $scalar =~ s/ ^ [ ]* \# [^\n]* \n? //mgx; # Excise comment lines
     ## $scalar =~ s/ ^ [ ]* \# [^\n]* \n? //mgx; # Excise trailing comment
+    
+    my $opt_newlines   = $opt_ref->{newlines}   || 0;
+    my $opt_csv_commas = $opt_ref->{csv_commas} || 0;
+    my $opt_csv        = $opt_newlines || $opt_csv_commas;
     my $had_parentheses;
-    ($scalar, $had_parentheses) = _strip_outer_parens($scalar);
+    
+    ($scalar, $had_parentheses) = _strip_outer_parens($scalar)
+        unless $opt_csv;
     
     my @list;
     if ($had_parentheses) {
@@ -3267,8 +3313,10 @@ sub _split_scalar {
         return \@list;
     }
     @list = split(/ [ ]* \n [ ]* /x, $scalar, -1);
-    
-    if (scalar @list == 1) {
+    if ($opt_newlines ) {
+        return \@list;
+    }    
+    if (scalar @list == 1 && ! $opt_csv_commas) {
         # Only one line, try splitting on pipes
         my $first_char = substr($scalar,  0, 1);
         my $last_char  = substr($scalar, -1, 1);
@@ -3287,10 +3335,15 @@ sub _split_scalar {
     if (scalar @list == 1) {
         # Only one line, try splitting on commas
         ## ??? If splitting on commas, don't allow commas within numbers
-        #  ??? Should handle commas within numbers properly now
+
         ## ??? Split on commas that do not have digits adjacent both sides
-         @list = split(/ (?<!\d) [,] | [,] (?!\d) /x, $scalar, -1);
-        ## @list = split(/ [,] /x, $scalar, -1);
+        ## @list = split(/ (?<!\d) [,] | [,] (?!\d) /x, $scalar, -1);
+        
+        # If it fits within csv rules format, treat it as csv
+        ##@list = split(/  [,]  /x, $scalar, -1);
+        
+        my $list_ref = _parse_csv($scalar);
+        @list = @{$list_ref};
     }
     # Trim any leading and trailing spaces from the fields
     for my $field (@list) {
@@ -3305,6 +3358,88 @@ sub _split_scalar {
     return \@list;
     
     
+}
+# --------------------------------------------------------------------
+sub _parse_csv_NOT_USED {
+    
+    # Passed: a string containing no newlines
+    # Returns: a reference to an array containing the sub-fields of the
+    #          string, split using Excel csv-format rules
+    #               - sub-fields are delimited by commas outside of quoted strings
+    #               - leading and trailing spaces are stripped off each sub-field
+    #               - quoted sub-fields start and end with a double-quote
+    #               - within a quoted sub-field, two adjacent double-quotes mean one double-quote
+    #               - the outer quotes of a quoted sub-field are removed
+    
+    my ($line) = @_;
+    my $col;
+    $line .= "\n";
+    my @cols = ( $line =~
+                / [ ]*              # opt spaces
+                  (                 # capture
+                                    #   either
+                         [^,"]*     #     zero or more not comma dq
+                      |             #   or
+                         "          #     dq
+                         (?:        #     zero or more 
+                            [^"]*   #         zero or more non-dq
+                            ""      #         two dq
+                         )*         #
+                         [^"]*      #      zero or more non-dq
+                         "          #      dq
+                  )                 #
+                  [ ]*              # opt spaces
+                  [,\n]             # comma or newline
+                  [ ]*              # opt spaces
+                /gx);
+    for $col (@cols) {
+        if (substr($col, 0, 1) eq '"') {              # If quoted sub-field
+            $col = substr($col, 1, length($col) - 2); #   Drop outer quotes
+            $col =~ s/""/"/g;                         #   Combine adjacent quotes
+        }
+    }
+    return \@cols;
+}
+# --------------------------------------------------------------------
+sub _parse_csv {
+    
+    # Passed: a string containing no newlines
+    # Returns: a reference to an array containing the sub-fields of the
+    #          string, split using Excel csv-format rules
+    #               - sub-fields are delimited by commas outside of quoted strings
+    #               - leading and trailing spaces are stripped off each sub-field
+    #               - quoted sub-fields start and end with a double-quote
+    #               - within a quoted sub-field, two adjacent double-quotes mean one double-quote
+    #               - the outer quotes of a quoted sub-field are removed
+    
+    my ($line) = @_;
+    $line .= "\n";
+    my @cols = ( $line =~
+                / [ ]*              # opt spaces
+                  (                 # capture
+                                    #   either
+                         [^,"]*?    #     lazy zero or more not comma dq
+                      |             #   or
+                         "          #     dq
+                         (?:        #     zero or more 
+                            [^"]*   #         zero or more non-dq
+                            ""      #         two dq
+                         )*         #
+                         [^"]*      #      zero or more non-dq
+                         "          #      dq
+                  )                 #
+                  [ ]*              # opt spaces
+                  [,\n]             # comma or newline
+                  [ ]*              # opt spaces
+                /gx);
+  
+    map { s/^"|"$   # either start-of-string then dq
+                    # or     dq then end-of-string
+           //gx,    # Replace with null
+         s/""       # two dqs
+          /"/gx     # Replace with one dq
+        } @cols;
+    return \@cols;
 }
 # --------------------------------------------------------------------
 sub _strip_outer_parens {
@@ -3529,13 +3664,13 @@ sub unload {
     # Data unloader - OO method
     
     my ($self, $data_ref, $opts_ref) = @_;
-    my ($data_unloaded, $opts_errs) = _unload_data($data_ref, $self->{schema}, $opts_ref);
+    my ($data_unloaded, $opts_errs) = unload_data($data_ref, $self->{schema}, $opts_ref);
     return wantarray ? ($data_unloaded, $opts_errs) : $data_unloaded;
 }
 
 # --------------------------------------------------------------------
 
-sub _unload_data {
+sub unload_data {
     
 # Passed:
 #   - data structure
@@ -3575,6 +3710,8 @@ sub _unload_data {
     } elsif ($output_format eq 'YAML' || $output_format eq 'YAML+') {
         my $data_as_YAML = _YAML_dump($data_as_structure);
         return wantarray ? ($data_as_YAML, $options_errors) : $data_as_YAML;
+    } elsif ($output_format eq 'csv') {
+        return wantarray ? ($data_as_structure, $options_errors) : $data_as_structure;
     } else {
         my $data_as_flow = _to_flow($data_as_structure, $output_format) . "\n";
         return wantarray ? ($data_as_flow, $options_errors) : $data_as_flow;
@@ -3607,8 +3744,31 @@ sub _data_output_structure {
 
         if ($schema_type eq 'date') {
             # if date internalised, convert to standard
+            return $scalar_data if ($scalar_data !~ / ^ -? \d+ \z /x);
+                                                #   sos then opt - then one or more digits then eos
             my ($yy, $mm, $dd) = (localtime($scalar_data))[5, 4, 3];
             # if relaxation wanted, do it here
+            my $date_option_int = $opts_ref->{dates}{internal} || '';
+            my $date_option_ext = $opts_ref->{dates}{external} || '';
+            # External: defaults to YAML standard yyyy-mm-dd
+            #           supports ddmmyy, mmddyy, US,UK, Aus, Nz
+            #               dmy ddmmyy ddmmyyyy dd-mm-yyyy dd/mm/yy dd/mm/yyyy
+            #               ddth month yy etc.
+            #               d = one or two digits, dd = two digits
+            #               dth or ddth = one or two digit ordinal number
+            #               m = one or two digits, mm = two digits,
+            #                mon or Mon or mmm or Mmm = three letters,
+            #                month or Month = full month name
+            #                month, or Month, = full month name and comma
+            #               yy = two digit year, yyyy = for-digt year
+            #               allow any valid d/m/y sequence on input,
+            #            convert to specified format on output
+            # Internal
+            if ($date_option_int eq 'excel') {
+                if ($date_option_ext eq '') {
+                    
+                }
+            }
             return ($yy + 1900 . '-'
                                . sprintf('%02d', $mm + 1) . '-'
                                . sprintf('%02d', $dd)
@@ -3621,6 +3781,12 @@ sub _data_output_structure {
             # Assuming seconds within day (sort of epoch seconds)
             # When we support unloading Excel time, we will have to convert fractional days
             
+            my $time_option_int = $opts_ref->{dates}{internal} || '';
+            my $time_option_ext = $opts_ref->{dates}{external} || '';
+            
+            if ($time_option_int eq 'excel') {
+                $scalar_data *= 24 * 60 * 60;
+            }
             my $secs  = $scalar_data % 60;
             my $mins  = int($scalar_data / 60);
             my $hours = int($mins / 60) % 24;
@@ -3630,27 +3796,51 @@ sub _data_output_structure {
             my $time = sprintf('%02d:%02d:%02d', $hours, $mm, $secs);
             return $quote . $time . $quote;
         } elsif ($schema_type eq 'timestamp') {
-                        # if date internalised, convert to standard
+            # if date internalised, convert to standard
+            return $scalar_data if $scalar_data !~ / ^ \d+ $ /x;            
             my ($yy, $mon, $dd, $hour, $min, $ss) = (localtime($scalar_data))[5, 4, 3, 2, 1, 0];
             # if relaxation wanted, do it here
-            return ($yy + 1900 . '-'
+
+            my $date_option_int = $opts_ref->{dates}{internal};
+            my $date_option_ext = $opts_ref->{dates}{external};
+
+            my $stamp =   $yy + 1900 . '-'
                         . sprintf('%02d', $mon + 1) . '-'
                         . sprintf('%02d', $dd)      . ' '
                         . sprintf('%02d', $hour)    . ':'
                         . sprintf('%02d', $min)     . ':'
                         . sprintf('%02d', $ss) 
-                        
-                        );
+                        ;
+            my $quote = $unload_format eq 'YAML_flow' ? '"' : '';                        
+            return $quote . $stamp . $quote;
         } elsif ( ($schema_type eq 'int' || $schema_type eq 'number')
                   && $unload_format eq 'YAML+') {
             
-            my $quote = '';
+            ## my $quote = '';
             while ($scalar_data =~ s/(?<![.]) (\d+) (\d{3})/$1,$2/x) {
                 # A comma has been inserted by the substitution
-                $quote = $unload_format eq 'YAML_flow' ? '"' : '';
+                # But don't need to do anything
+                
+                ## $quote = $unload_format eq 'YAML_flow' ? '"' : '';
+                ## Cannot be YAML_flow here
             }
-            return $quote . $scalar_data . $quote;
+            ## return $quote . $scalar_data . $quote;
+            return $scalar_data;
         } else {
+            # Plain scalar, presumably a string
+            if ($unload_format eq 'csv') {
+                # csv format data wanted
+                if (   $scalar_data =~
+                    /
+                          [,"]      # Contains comma or double-quote
+                      |   \A [ ]    # Or has leading space(s)
+                      |   [ ] \z    # Or has trailing space(s)
+                    /x) {
+                    # String needs to be quoted
+                    $scalar_data =~ s/"/""/g;
+                    $scalar_data = '"' . $scalar_data . '"';
+                } 
+            }
             return $scalar_data;
         }
 
@@ -3687,12 +3877,18 @@ sub _data_output_structure {
             if (ref $sub_schema eq 'HASH'
                && defined $sub_schema->{type}
                && $sub_schema->{type} eq 'row'
-               && $unload_format =~ / YAML[+] /xi ) {
+               && $unload_format =~ / YAML[+] | csv /xi ) {
                 my @table_contents;
                 my @max_column_width;
                 my $pipe_seen  = 0;
                 my $comma_seen = 0;
                 
+                my @column_names;
+                for my $schema_column_ref (@{$sub_schema->{columns}}) {
+                    my $col_name = $schema_column_ref->{'name'};
+                    push @column_names, $col_name;
+                    push @max_column_width, length($col_name);
+                }
                 if (_is_ref_to_array($data_ref)){
                     for my $row (@{$data_ref}) {
                         my $col_ndx = 0;
@@ -3700,14 +3896,14 @@ sub _data_output_structure {
                         for my $schema_column_ref (@{$sub_schema->{columns}}) {
                             my $pause = 7;
                             my $col_name = $schema_column_ref->{'name'};
-                            
                             my $col_contents = _data_output_structure($schema_column_ref,
                                          $row->{$col_name},
                                          $opts_ref);
+                            $col_contents = '' unless defined $col_contents;
                             $pipe_seen  = $pipe_seen  || $col_contents =~ /\|/x;
                             $comma_seen = $comma_seen || $col_contents =~ /\,/x;
                             my $column_width = length($col_contents);
-                            if ($column_width > ($max_column_width[$col_ndx] || 0)   ) {
+                            if ($column_width >= ($max_column_width[$col_ndx] || 0)   ) {
                                 $max_column_width[$col_ndx] = $column_width;
                             }
                             push @row_contents, $col_contents;
@@ -3716,20 +3912,45 @@ sub _data_output_structure {
                         push @table_contents, \@row_contents;
                     }
                     
-                    my $col_sep = $pipe_seen ? ',' : '|';
+                    my $col_sep = $unload_format =~ /csv/ ? ','
+                                : $pipe_seen              ? ','
+                                :                           '|';
                     my $number_of_columns = scalar @{$sub_schema->{columns}};
                     for my $row_ref (@table_contents) {
-                        my $row_text = "$col_sep ";
+                        my $row_text = "";
+                        $row_text = "| " if $col_sep eq '|';
                         for my $col_ndx (0 .. $number_of_columns - 1) {
                             my $cell_text = $row_ref->[$col_ndx];
                             $cell_text .= ' ' x ($max_column_width[$col_ndx] - length($cell_text) );
-                            $row_text .= $cell_text . " $col_sep ";
+                            $row_text  .= ' ' if $col_sep eq '|';
+                            $row_text  .= $cell_text . "$col_sep ";
                         }
+                        chop $row_text; # Drop trailing space
+                        chop $row_text; # Drop trailing separator
                         push @out_array, $row_text
                         
                     }
                     my $pause = 8;
-                    return \@out_array;
+                    if ($unload_format =~ /csv/) {
+                        if ($unload_format eq 'csv_with_header') {
+
+                            my $header_line = '';
+                            my $cum_width = 0;
+                            for my $col_ndx (0 .. scalar @column_names - 1) {
+                                my $col_name = $column_names[$col_ndx];
+                                $header_line .= $col_name;
+                                $header_line .= ' ' x ($max_column_width[$col_ndx] - length($col_name) );
+                                $header_line .= ', '; 
+                            }
+                            chop $header_line;  # Drop trailing space
+                            chop $header_line;  # Drop trailing comma
+                            unshift @out_array, $header_line;                            
+                            #unshift @out_array, join(', ', @column_names);
+                        }
+                        return join( "\n", @out_array);  
+                    } else {
+                        return \@out_array;
+                    }
                 } else {
                     # Data is not an array, so don't treat it as a table
                 }
@@ -5094,7 +5315,7 @@ scalar:
     sequence=seq=array: boolean
     map=mapping=hash:   boolean
 lib: any
-unload_format: values structure, YAML, Perl, JSON, YAML_flow, YAML+
+unload_format: values structure, YAML, Perl, JSON, YAML_flow, YAML+, csv, csv_with_header
 ...
 
 my $options_schema_kwalify = << "...";
@@ -5175,6 +5396,8 @@ mapping:
       - JSON
       - YAML_flow
       - YAML+
+      - csv
+      - csv_with_header
     type: scalar
   relaxed=relax=relaxation:
     type: bool
@@ -5186,6 +5409,10 @@ mapping:
         type: bool
     type: map
   update:
+    type: bool
+  csv:
+    type: bool
+  csv_with_header:
     type: bool
 type: map
 ...
@@ -5216,7 +5443,7 @@ sub _relaxed_times {
 #         h pm  hh pm  h:mm pm  hh:mm pm
 
     my ($raw) = @_;
-    
+    $raw = $raw || '';
     my ($hh, $mm, $ss, $am_pm, $sep);
     my $ok = 1;
     
@@ -5659,7 +5886,7 @@ sub _today_yyyy_mm_dd_offset {
 #
 #       For enumerations and ranges, the relaxation of the allowed values
 #       could be done when the schema is loaded - but that would result in the
-#       error text containing the normailsed form, so the original value would
+#       error text containing the normalised form, so the original value would
 #       also need to be retained. If relaxation is deferred until checking,
 #       efficiency is reduced, and the use of a hash for checking enumerations
 #       is precluded.
@@ -5772,19 +5999,27 @@ sub _today_yyyy_mm_dd_offset {
 #
 
 ## Default values for an array or hash in a compact schema can currently only be
-## entered as a string.
+## entered as a string, because the default value is part of the <control> entry
+## which currently must be a string.
+
 ## If the entry is an array, the default value string will be split using
-##     the _split_scalar_into_array() function.
+##     the _split_scalar() function.
 ## If the entry is a hash, the default value string will be split using the
 ##     _split_scalar_into_map() function.
 ## This does allow complex default values, but for a hash that have to be
 ## entered in a single line (due to _split_scalar_into_map() limitations).
 ## It would be more flexible to provide some mechanism to specify the default
 ## as a normal YAML structure. Possibilities include:
-##      - a [default]: key parallel with the <control>: key in a hash
-##      - an array entry such as - [default]:
+##      - a <default>: key parallel with the <control>: key in a hash
+##      - an array entry such as - <default>:
 ##            followed by the default value structure
-##      - sub-dividing <control>: between [default]: and [other]:
+##      - sub-dividing <control>: between default: and other:
+##          <control>:
+##              other: max size 6
+##              default:
+##                  foibles: 56
+##                  quirks: 123
+#            
 ##
 ## A hash can be specified as optional, but with one or more keys specified as
 ## required. The semantics are that the required keys must be present unless the
@@ -5829,7 +6064,8 @@ sub _today_yyyy_mm_dd_offset {
 #
 #   
 #   REVERSE CONVERSIONS:
-#       Partially implemented as unload_data() and the unload method
+#       Partially implemented as unload_data() and the unload method.
+#       Output formats: YAML, JSON, PERL, csv, csv_with_header, YAML+ (with tables)
 #
 #       Passed a data structure with data in *internal* format and a schema,
 #       produces the same data in *external* format.
@@ -5872,7 +6108,7 @@ sub _today_yyyy_mm_dd_offset {
 #           - Also Ran (4th)
 #
 #       One approach for this particular example would be to define results as a
-#       sequence of sequences, and rely on the 'scalar when sequence expected'
+#       sequence of sequences, and rely on the 'allow scalar when sequence expected'
 #       option to produce the desired result.
 #
 #
@@ -5984,7 +6220,7 @@ sub _today_yyyy_mm_dd_offset {
 
 ==============================================================================
 
-Copyright 2010, 2011, 2012 Derek Mead. All rights reserved 
+Copyright 2010, 2011, 2012, 2013 Derek Mead. All rights reserved 
  
 This program is free software. It comes without any warranty, to the extent
 permitted by applicable law. You can redistribute it and/or modify it
