@@ -140,7 +140,7 @@ OO interface:
      errs        = validator->errors()  # any errors from preceding call
      errs        = validator->errors(data, [options]) # any errors in this data
      
-    (unloaded_data , errs) = validator->unload
+    (unloaded_data , errs) = validator->unload(data, [options])
      
 
 Procedural interface:
@@ -691,7 +691,15 @@ my %REGEX_TYPES = (
                     time    => qr/ ^ (?: [01]?\d | 2[0-3] )  # hour:   0 to 9, 00 to 09, or 10 to 19, or 20 to 23
                                         : [0-5] \d           # minute: colon then 00 to 59
                                         : [0-5] \d           # second: colun then 00 to 59
-                                        (?: $ | [ ]+ \# )/x,
+                                        (?: $ | [ ]+ \# )/x,                                        # end-of-string or trailing comment
+                    timestamp
+                            => qr/ ^                       # start of string
+                                (?:19|20)\d{2}-\d{2}-\d{2} # date
+                                [ ]+                       # space(s)
+                                (?: [01]?\d | 2[0-3] )     # hour:   0 to 9, 00 to 09, or 10 to 19, or 20 to 23
+                                            : [0-5] \d     # minute: colon then 00 to 59
+                                            : [0-5] \d     # second: colun then 00 to 59
+                                (?: $ | [ ]+ \# )/x,                                        
                                                              # end-of-string or trailing comment
                   );
 
@@ -706,26 +714,27 @@ my %TYPE_SYNONYMS = (
                     );
 
 my %TYPE_UPDATERS = (
-                    int     => \&_update_int,
-                    float   => \&_update_float,
-                    number  => \&_update_num,
-                    bool    => \&_update_bool,
-                    boolean => \&_update_bool,
-                    date    => \&_update_date,
-                    time    => \&_update_time,
+                    int       => \&_update_int,
+                    float     => \&_update_float,
+                    number    => \&_update_num,
+                    bool      => \&_update_bool,
+                    boolean   => \&_update_bool,
+                    date      => \&_update_date,
+                    time      => \&_update_time,
+                    timestamp => \&_update_timestamp,
                      );
 my %TYPE_IS_NUMERIC = (
-                    str     => 0,
-                    text    => 0,
-                    int     => 1,
-                    float   => 1,
-                    number  => 1,
-                    bool    => 0,
-                    scalar  => 0,
-                    date    => 0,
-                    time    => 0,
-   
-                       );
+                    str       => 0,
+                    text      => 0,
+                    int       => 1,
+                    float     => 1,
+                    number    => 1,
+                    bool      => 0,
+                    scalar    => 0,
+                    date      => 0,
+                    time      => 0,
+                    timestamp => 0,
+                          );
 
 # Constants for update routines
 my $RELAXED = 1;
@@ -738,6 +747,8 @@ my %SCHEMA_VALID_KEYS =
                           columns
                          };
     
+my $yaml_load_imported = 0;
+
 sub _choose_YAML_lib {
     if (! defined $YAML_LIB) {
         $YAML_LIB = $DEFAULT_YAML_LIB;
@@ -747,10 +758,10 @@ sub _choose_YAML_lib {
         
     } elsif ($YAML_LIB =~ /XS/ix) {
         require YAML::XS;
-        YAML::XS->import(qw(Load));
+        YAML::XS->import(qw(Load)) unless $yaml_load_imported++;
     } elsif ($YAML_LIB =~ /YAML/ix) {
         require YAML;
-        YAML->import(qw(Load));
+        YAML->import(qw(Load))  unless $yaml_load_imported++;
     } else {
         print "YAML lib: $YAML_LIB\n";
     }
@@ -3169,7 +3180,68 @@ sub _update_time {
         return wantarray ? ($data, $error_text) : $data;
     }
 }
+# --------------------------------------------------------------------
+sub _update_timestamp {
+    
+    # Initial version
+    # Assumes date occurs before time
+    # Assumes date has no embedded spaces
+    
+    my ($call_type, $data, $option_text_ext, $option_text_int ) = @_;
+    my $error_text;
+    if ($call_type == $RELAXED) {
+        # Pre-process non-YAML-standard times
+        # Parse timestamp and decide if it is valid
+        # If not, just return original field
+        # If valid, update to yyyy-mm-dd hh:mm:ss format
+        
+        my ($date_part, $time_part) = split( / \s+ /x, $data, 2);
+        my $relaxed_date = _update_date($call_type, $date_part,
+                                        $option_text_ext, $option_text_int);
+        my $relaxed_time = _update_time($call_type, $time_part,
+                                        $option_text_ext, $option_text_int);
+        return $relaxed_date . ' ' . $relaxed_time;
+    } else {
+        # After
+        # Convert yyyy-mm-dd hh:mm:ss to epoch seconds or Excel format
+        my ($year, $month, $day, $hours, $minutes, $seconds);
 
+        ($year, $month, $day, $hours, $minutes, $seconds)
+            = ($data =~ /(....)-(..)-(..) (..):(..):(..)/);
+ 
+        my $epoch_seconds_time = $hours * 3600 + $minutes * 60 + $seconds;
+        if (defined $option_text_int && $option_text_int eq 'excel') {
+            $epoch_seconds_time /= 86400;
+        }
+        
+        my $epoch_seconds_date;
+        if (defined $option_text_int && $option_text_int eq 'excel') {
+            eval {$epoch_seconds_date = timegm(0, 0, 0, $day, $month - 1, $year - 1900);};
+            my $err = $@;
+            if ($@) {
+                # timegm barfed
+                $error_text = "Timestamp $data could not be converted to Excel";
+                $epoch_seconds_date = 0;
+            }            
+            $data = ( ($epoch_seconds_date + $epoch_seconds_time) / 86400) + 25569;
+        } else {
+            eval {$epoch_seconds_date = timelocal(0, 0, 0, $day, $month - 1, $year - 1900);};
+            my $err = $@;
+            if ($@) {
+                # timelocal barfed
+                $error_text = "Timestamp $data could not be converted to epoch seconds";
+                $data = 0;
+            } else {
+                $data = $epoch_seconds_date + $epoch_seconds_time;
+            }
+        }
+        
+        
+        return wantarray ? ($data, $error_text) : $data;
+    }
+    
+    
+}
 # --------------------------------------------------------------------
 sub _do_nothing {}
 # --------------------------------------------------------------------
@@ -3214,9 +3286,11 @@ sub _split_scalar {
     
     if (scalar @list == 1) {
         # Only one line, try splitting on commas
-        ## Should handle commas within numbers properly now
-        # Split on commas that do not have digits adjacent both sides
-        @list = split(/ (?<!\d) [,] | [,] (?!\d) /x, $scalar, -1);
+        ## ??? If splitting on commas, don't allow commas within numbers
+        #  ??? Should handle commas within numbers properly now
+        ## ??? Split on commas that do not have digits adjacent both sides
+         @list = split(/ (?<!\d) [,] | [,] (?!\d) /x, $scalar, -1);
+        ## @list = split(/ [,] /x, $scalar, -1);
     }
     # Trim any leading and trailing spaces from the fields
     for my $field (@list) {
@@ -3555,6 +3629,18 @@ sub _data_output_structure {
             my $quote = $unload_format eq 'YAML_flow' ? '"' : '';
             my $time = sprintf('%02d:%02d:%02d', $hours, $mm, $secs);
             return $quote . $time . $quote;
+        } elsif ($schema_type eq 'timestamp') {
+                        # if date internalised, convert to standard
+            my ($yy, $mon, $dd, $hour, $min, $ss) = (localtime($scalar_data))[5, 4, 3, 2, 1, 0];
+            # if relaxation wanted, do it here
+            return ($yy + 1900 . '-'
+                        . sprintf('%02d', $mon + 1) . '-'
+                        . sprintf('%02d', $dd)      . ' '
+                        . sprintf('%02d', $hour)    . ':'
+                        . sprintf('%02d', $min)     . ':'
+                        . sprintf('%02d', $ss) 
+                        
+                        );
         } elsif ( ($schema_type eq 'int' || $schema_type eq 'number')
                   && $unload_format eq 'YAML+') {
             
