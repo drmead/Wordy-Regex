@@ -15,7 +15,7 @@
        ;
     use Carp;
 
-our $VERSION = '2013.01.04';
+our $VERSION = '2013.07.07';
 
 
 =format
@@ -30,24 +30,24 @@ SYNOPSIS:
     wre()
         
         # Decide if the contents of $data matches your wordy regexp
-        if ($data =~ wre '<your wordy regexp>')  { ... }
+        if ($data =~ wre 'your wordy regexp')  { ... }
         
         # Decide if the contents of $_ matches your wordy regexp
-        if (wre '<your wordy regexp>')  { ... }
+        if (wre 'your wordy regexp')  { ... }
         
         # Assign a regexp to a scalar, then use it later
-        my $wre_1 = wre '<your wordy regexp>';
+        my $wre_1 = wre 'your wordy regexp';
         if ($data =~ /$wre_1/)  { ... }
         
         # Use a regex with global mode (/g)
-        my $wre_2 = wre '<your wordy regexp>';
+        my $wre_2 = wre 'your wordy regexp';
         while ($data =~ /$wre_2/g) {
             print "$1\n";
         }
         
         # Use a regexp in a substitution
-        my $wre_3 = wre '<your wordy regexp>';
-        $data =~ s/$wre_3/<replacement text>/g;
+        my $wre_3 = wre 'your wordy regexp';
+        $data =~ s/$wre_3/replacement text/g;
             
     wret()        
             
@@ -58,12 +58,12 @@ SYNOPSIS:
             - substitutions (s///).
             
         # Use the regex in-line with global mode
-        while ($data =~ /${wret '<your wordy regexp>'}/g) {
+        while ($data =~ /${wret 'your wordy regexp'}/g) {
             print "$1\n";
         }
         
         # Use the regex in a substitution
-        $data =~ s/${wret '<your wordy regexp>'}/<replacement text>/g;
+        $data =~ s/${wret 'your wordy regexp'}/replacement text/g;
         
         
     OO interface:
@@ -110,7 +110,7 @@ SYNOPSIS:
         
         five digits letters # Five characters, each can be a digit or a letter
         
-        as hh two digits then : then as mm two digit   # Named captures
+        as hh two digits then : then as mm two digits   # Named captures
         
         
 DESCRIPTION:        
@@ -243,11 +243,27 @@ condition
 
 =cut
 
+# Global options: global because they apply to the entire output regex
+
 my $option_free_space_output;
 my $option_embed_original_regex;
 my $option_delimit_regex;
 
+# Flavour - standardised to
+#       perl
+#       javascript
+#       jave
+#       .net
+#       python
+#       pcre
+#       php
+#       re2
 
+my $option_flavour = 'whatever';
+
+## my @capture_names;
+
+my $capture_count = 0;
 my $xsp;
 my $embed_source_regex;
 
@@ -255,26 +271,94 @@ my $embed_source_regex;
 # It's a readability preference, and might have some slight performance penalty,
 # if the regex engine doesn't optimise it out.
 # Currently it's a constant as there is no mechanism to change it
-# BUG: Setting it to false?? results in [\s+] instead of [\s]+ in space-means-wss
-# mode
 
-# Perl: this works in Perl, but some flavours ignore unescaped spaces within
-#       character classes in free-spacing mode.
+
+# Perl: this works in Perl, but some flavours (Java?) ignore unescaped spaces
+# within character classes in free-spacing mode.
 
 my $DEFAULT_SOLO_SPACE_AS_CLASS = 0;
 
+# Global flavour options
+my $fo_free_space_allowed;      # /x mode available
+my $fo_braced_hex;              # Perl style \x{hex}
+my $fo_u_and_four_hex;
+my $fo_u_braced_six;            # Ruby 1.9 /u{123456}
+my $fo_U_and_eight_hex;
+my $fo_single_line_allowed;     # /s mode available
+    
+my $fo_does_capture_name;
+my $fo_capture_name_start;
+my $fo_capture_name_end;
+my $fo_early_perl_names;
+
+my $fo_named_backref_start;
+my $fo_named_backref_end;
+my $fo_all_backrefs_named;
+
+
+my $flavour_option_table = <<'EoT';
+Flavour-->>         java js   .net pcre perl php  pyth re2  ruby xreg      
+free_space_allowed  yes  no   yes  yes  yes  yes  yes  no   yes  yes
+braced_hex          no   no   no   yes  yes  no   no   no   no   no      
+u_and_four_hex      yes  yes  yes  no   no   yes  yes  no   yes  yes
+u_braced_six        no   no   no   no   no   no   no   no   yes  no      
+U_and_eight_hex     no   no   no   no   no   no   yes  no   no   no         
+single_line_allowed yes  no   yes  yes  yes  yes  yes  yes  yes  yes
+    
+does_capture_name   yes  no   yes  yes  yes  yes  yes  yes  yes  yes
+capture_name_start  ?<   n/a  ?<   ?<   ?<   ?<   ?P<  ?<   ?<   ?<
+capture_name_end    >    n/a  >    >    >    >    >    >    >    >    
+early_perl_names    no   no   no   no   no   no   no   no   no   no   
+named_backref_start \k<  n/a  \k{  \k<  \g{  \k<  (?P= n/a  \k<  \k<
+named_backref_end   >    n/a  }    >    }    >    )    n/a  >    >    
+all_backrefs_named  no   no   yes  yes  yes  no   no   no   no   no      
+EoT
+
+my %flavour_abbrevs = (java       => 'java',
+                       javascript => 'js',
+                       '.net'     => '.net',
+                       pcre       => 'pcre',
+                       perl       => 'perl',
+                       php        => 'php',
+                       python     => 'pyth',
+                       re2        => 're2',
+                       ruby       => 'ruby',
+                       xregexp    => 'xreg',
+                     );
+my %ft;
+my @col_names;
+for my $line (split( /\n/, $flavour_option_table)) {
+    my @col = split(/\s+/, $line);
+    my $abbrev = $col[0] || '';
+    if ($abbrev eq 'Flavour-->>') {
+        # Header row
+        @col_names = @col;
+    } else {
+
+        for my $col_idx (1 .. scalar( @col_names ) - 1 )  {
+            my $fo_value = $col[$col_idx] || '';
+            if ($fo_value eq 'no') {
+                $fo_value = 0;
+            }
+            $ft{ $col_names[$col_idx] }{$abbrev} = $fo_value;
+        }
+    }
+}
+
 # Characters to put into a character class even when solo.
-# It's a readability preference: we have to generate (e.g.) either [*] or \* 
+# It's a readability preference: we have to generate (e.g.) either [*] or \*
+
 # I find the bracketted option clearer than the escaped option, so that a
 # backslash introduces a group (such as \d) or a special character (such as \t)
-# rather than escaping a regex meta-character.
+# rather than escaping a regex meta-character. 
 
 my %char_class_even_when_solo;
 my $DEBUG = 0;
 my $comment_starter = '#';      # Standard for Perl, and other regex flavours
                                 #  that allow comments
 my $regex_starter   = '/';      # Globals used by character encoder and regex 
-my $regex_finisher  = '/';      # generator
+my $regex_finisher  = '/';      #  generator: these characters must be escaped
+                                #  even in a character class
 
 my $REQUIRE_S_MODE = 1;
 my $REQUIRE_M_MODE = 2;
@@ -283,17 +367,13 @@ my $REQUIRE_P_MODE = 8;
     
 my $MAGIC_MARKER = '#MAGIC^MARKER#';
 
-my %target = ( does_capture_name  => 1,
-               capture_name_start => '?<',
-               capture_name_end   => '>',
-               early_perl_names   => 0,    # Emulate Perl 5.10 for earlier Perls
-             );
+my @ire_lines;                # Global to allow hackish macro definitions
+my $global_indent      = 0;   # Global to allow hackish macro definitions
+my $MAX_IRE_LINES      = 99;  # Arbitrary limit to detect recursion
+my $gnt_depth          = 0;   # Global to allow hackish macro definitions
+my $MAX_GNT_DEPTH      = 20;  # Arbitrary limit to detect recursion
 
-my @capture_name;
-
-my @ire_lines;          # Global to allow hackish macro definitions
-my $global_indent = 0;  # Global to allow hackish macro definitions
-my %macros = (macro => "two digits\ntwo letters");
+my %macros = ();
 
 my $LT_GROUP    = 'group';      # Group name, e.g. LETTERS or DIGIT or DIGITS
 my $LT_CHAR     = 'char';       # One character, whether specified as a 
@@ -353,6 +433,7 @@ my $TT_SAME_LINE_MACRO
     my $LINE_HAS_QUANTIFIER   = 4;   # Line has explicit quantifier
     my $LINE_HAS_OPTIONAL     = 8;   # Line has explicit 'optional'
     my $LINE_HAS_BEEN_NEGATED = 16;  # Line has 'not' or a synonym
+    
     my $LINE_HAS_LITERAL      = 32;  # Line has at least one literal
     
     my $LINE_HAS_SEQUENCE_LITERAL
@@ -360,8 +441,9 @@ my $TT_SAME_LINE_MACRO
                                      # more than one character
     my $LINE_HAS_ANYTHING     = 128; # Line has 'character' or an equivalent
     my $LINE_HAS_ASSERTION    = 256; # Line has at least one assertion
+    my $LINE_HAS_NEGATED_LITERAL
+                              = 512; # Line has at least one explicitly negated literal
     
-    my $capture_count = 0;
     
     # Beware that these are effectively singleton global variables, but they are
     # used by routines that recurse for each level of indentation. So their
@@ -429,6 +511,7 @@ my $TT_SAME_LINE_MACRO
                     get                => 'capture'              ,
                     gnl                => 'generic_newline'      ,
                     gnls               => 'generic_newlines'     ,
+                    lazy               => 'minimal'              ,
                     look_behind        => 'preceding'            ,
                     lookbehind         => 'preceding'            ,
                     look_ahead         => 'followed_by'          ,
@@ -438,6 +521,8 @@ my $TT_SAME_LINE_MACRO
                     negative_lookahead => 'not_followed_by'      ,
                     negative_lookbehind=> 'not_preceding'        ,
                     non_case_sensitive => 'case_insensitive'     ,
+                    nl                 => 'newline'              ,
+                    nls                => 'newlines'             ,
                     opt                => 'optional'             ,
                     optionally         => 'optional'             ,
                     qty                => 'quantity'             ,
@@ -450,11 +535,17 @@ my $TT_SAME_LINE_MACRO
                     uni                => 'full_unicode'         ,
                     uppercase_letter   => 'uc_letter'            ,
                     upper_case_letter  => 'uc_letter'            ,
+                    wb                 => 'word_boundary'        ,
                     word_char          => 'word_ch'              ,
                     word_character     => 'word_ch'              ,
                     ws                 => 'whitespace'           ,
+                    nonl               => 'newline'              ,
+                    nonls              => 'newlines'             ,
                     );
-    
+    my %negated_synonyms = (
+                    nonl               => 'negated newline'      ,
+                    nonls              => 'negated newlines'     ,
+                            );
     normalise_hash_contents(\%synonyms);
     
     
@@ -532,6 +623,7 @@ my $TT_SAME_LINE_MACRO
                        word_ch    => 'noun',
                        character  => 'noun',
                        generic_newline => 'noun',
+                       unicode_combo   => 'noun',
                        );
     normalise_hash_keys(\%group_words);
     
@@ -547,6 +639,8 @@ my $TT_SAME_LINE_MACRO
                       space_means_wss  => 'S+', # space within string means whitespaces mode
                       space_means_space=> 'S-', # space within string means space mode
                       branch_reset     => '|',  # Branch reset is treated as a dummy mode
+                      replace_with     => 'R',  # Replacement: not really a mode
+                                                #  but we handle it as though it is
                       );
     normalise_hash_keys(\%mode_words);
     
@@ -564,13 +658,13 @@ my $TT_SAME_LINE_MACRO
     
     normalise_hash_keys(\%zero_width_matchers);
     
-    my $NON_WORD    = 'non';
-    my $NON_LENGTH  = length($NON_WORD);
+    my $NON_PREFIX    = 'non';
+    my $NON_LENGTH  = length($NON_PREFIX);
     
     ## my %groups      = (digit => 'digit', letter => 'letter');
     
     my %char_names = (
-        alarm   => "\a",
+        alarm           => "\a",
         ampersand       => '&',
         apostrophe      =>  "'",
         asterisk        => '*',
@@ -608,9 +702,11 @@ my $TT_SAME_LINE_MACRO
         left_brace      => '{',
         left_bracket    => '[',
         left_parenthesis=> '(',
+        lp              => '(',
         minus           => '-' , 
         newline         => '\n', 
         no_break_space  => '\xA0',
+        number_sign     => '#',
         open_brace      => '{',
         open_bracket    => '[',
         open_parenthesis=> '(',        
@@ -623,6 +719,7 @@ my $TT_SAME_LINE_MACRO
         right_brace     => '}',
         right_bracket   => ']',
         right_parenthesis=>')',
+        rp              => ')',
         semi_colon      => ';', 
         single_quote    => "'",
         slash           => '/', 
@@ -634,6 +731,8 @@ my $TT_SAME_LINE_MACRO
         tab             => '\t',
         tilde           => '~',
         underscore      => '_',
+        vertical_tab    => '\v',
+        vtab            => '\v',
          );
     normalise_hash_keys(\%char_names);
     
@@ -677,6 +776,29 @@ my $TT_SAME_LINE_MACRO
         }
     }
 
+sub set_flavour_options {
+    my ($flavour_long) = @_;
+    my $flavour_abbrev = $flavour_abbrevs{$flavour_long};
+    return ("Unknown flavour: $flavour_long") unless $flavour_abbrev;
+    $fo_free_space_allowed    = $ft{$flavour_abbrev}{free_space_allowed};
+    $fo_braced_hex            = $ft{$flavour_abbrev}{braced_hex};
+    $fo_u_and_four_hex        = $ft{$flavour_abbrev}{u_and_four_hex};
+    $fo_u_braced_six          = $ft{$flavour_abbrev}{u_braced_six};
+    $fo_U_and_eight_hex       = $ft{$flavour_abbrev}{U_and_eight_hex};
+    $fo_single_line_allowed   = $ft{$flavour_abbrev}{single_line_allowed};
+    
+    $fo_does_capture_name     = $ft{$flavour_abbrev}{does_capture_name};
+    $fo_capture_name_start    = $ft{$flavour_abbrev}{capture_name_start};
+    $fo_capture_name_end      = $ft{$flavour_abbrev}{capture_name_end};
+    $fo_early_perl_names      = $ft{$flavour_abbrev}{early_perl_names};
+
+    $fo_named_backref_start   = $ft{$flavour_abbrev}{named_backref_start};
+    $fo_named_backref_end     = $ft{$flavour_abbrev}{named_backref_end};
+    $fo_all_backrefs_named    = $ft{$flavour_abbrev}{all_backrefs_named};
+    
+    
+    return '';
+}
 
 {
     # State data for wre, done this way for compatibility with Perl versions
@@ -1002,10 +1124,10 @@ sub new {
     my ($class, $wre, $options_ref) = @_;
     
     my $self = { };
-    
+    my @capture_names = ('');
     ## say ('in wre');    
     my $flavour = $options_ref->{flavour} || 'Perl';
-    my $terse = _wre_to_tre($wre, $options_ref);
+    my $terse = _wre_to_tre($wre, $options_ref, \@capture_names);
     my $option_free_space = $options_ref->{'free_space'};
     # Assuming that _wre_to_tre defaults to free-spacing output
     my $free_space = defined $option_free_space ? $option_free_space : 1;
@@ -1014,12 +1136,19 @@ sub new {
         eval {$self->{'qr_terse'} = $free_space ? qr/$terse/x : qr/$terse/ };
         if ($@) {
             $self->{'qr_terse'} = "# Error: $@";
+            $self->{error} = $@;
+        } else {
+            $self->{error} = '';
         }
     }
     # Don't use qr/ / otherwise non-Perl terse expressions crash
-    $self->{'terse'} = $terse; 
-    $self->{'ire'} = $wre;
-    
+    $self->{terse} = $terse; 
+    $self->{ire}   = $wre;
+    ##for my $name (@capture_names) {  
+    ##    $self->{capture_names} .= ($name || '') . ';';
+    ##}
+    ## $self->{capture_names} .= ';';
+    $self->{capture_names} = \@capture_names;
     bless ($self, $class);
     return $self;       
     
@@ -1092,15 +1221,15 @@ sub flag_value {
 
     sub give_line_to_tokeniser {
         ($line) = @_;
-        ## $line = _trim_trailing($line);
         pos($line) = 0;
         $token_pos = 0;
         $line_has  = 0;     # Bit mask of what has been seen on this line
         
+        
     }
     sub gnt {
         # get next token
-        # Looks up barewords and sets $token_word to a standardised form, so
+        # Looks up barewords and sets $token to a standardised form, so
         # 'ThRouGH' as a bareword would be standardised to 'to', as case is
         # ignored and 'through' is a synonym of 'to'.
         # Returns nothing directly, but has lots of side-effects
@@ -1111,14 +1240,29 @@ sub flag_value {
         ($prev_prev_token, $prev_token) = ($prev_token, $token);
        
         $token_start_pos = pos($line);
+        if ($token_start_pos == 0) {
+            $delimiter = '';
+        }
         $token_raw = undef;
         
         $word_is_plural  = 0;
         $word_is_negated = 0;
         
+        
         my ($quote);
         
+        if ($delimiter eq ',') {
+            # We found a trailing comma on the previous call to this routine
+            $delimiter  = '';
+            $token      = 'then';
+            $token_type = $TT_WORD;
+            $token_raw  = ',';
+            $token_pos  = pos($line);
+            return; # ------------>>>>>>>>>>
+        }
+        
         $line =~ / \G \s+ /xgc; # Skip any leading whitespace
+        $token_start_pos = pos($line); ####
         ## my $pl = pos($line);print     "pos line: $pl\n";
         if ( $line =~ / \G \z /xgc) {
             # End of line
@@ -1128,7 +1272,7 @@ sub flag_value {
             $token_type = $TT_COMMENT;
         } elsif ($line =~ / \G ( ['"]            )      # single or double quote
                                ( .+?             ) \1   # any chars, then same quote
-                               ( \s | $ )               # space or eol
+                               ( \s | $ | , )           # space or eol or comma
                                /xgc) {
             # There is a valid quoted literal
             $quote = $1; $token = $2; $delimiter = $3;
@@ -1136,20 +1280,25 @@ sub flag_value {
             $literal_type = (length $token == 1) ? $LT_CHAR : $LT_SEQUENCE;
             $token_raw  = $quote . $token . $quote; # Reconstruct raw literal
         } elsif ($line =~ / \G ( ['"]   \S*      )      # single or double quote + opt space
-                               ( \s | $ )               # space or eol
+                               ( \s | $ | , )               # space or eol or comma
                                /xgc) {
             # Single or double quote, but didn't get picked as starting a valid
             # literal by previous match
             $token_type = $TT_ERROR;
             $token = $1; $delimiter = $2;
-        } elsif ($line =~ / \G ( . ) ( \s | $ ) /xgc){
-            # Single character, followed by whitespace or eol
+        } elsif ($line =~ / \G ( . ) ( \s | $ | , ) /xgc){
+            # Single character, followed by whitespace or eol or comma
             # So it's a valid naked character
             $token = $1; $delimiter = $2;
             $token_type = $TT_LITERAL;
             $literal_type = $LT_CHAR;
-        } elsif ( $line =~ / \G ( [a-z] - [a-z] | [A-Z] - [A-Z] | \d - \d )
-                                ( \s | $ ) /xgc) {
+        } elsif ( $line =~ / \G                   # end-of-previous-match
+                              (                   # capture
+                                   [a-z] - [a-z]  #     either a-z   then - then a-z
+                                 | [A-Z] - [A-Z]  #     or     A-Z   then - then A-Z
+                                 | \d - \d )      #     or     digit then - then digit
+                                ( \s | $ | , )        # capture ( whitespace or eosx or comma)
+                                 /xgc) {
             # range of digits or letters, e.g. a-z or D-H or 2-8
             # Allows invalid ranges such as B-A, 9-0, b-a
             $token = $1; $delimiter = $2;
@@ -1162,15 +1311,38 @@ sub flag_value {
             $token_type = $TT_NUMBER;
         } elsif ($line =~
             / \G  hex (?: adecimal )? [-_] ([a-f0-9]+)
-                  ( \s | $ )/xgci) {
+                  ( \s | $ | , )/xgci) {
             # hex-<hex-digits>
-            my $hex_digits = $1; $delimiter = $2;
+            my $raw_hex_digits = $1; $delimiter = $2;
             $token_type = $TT_LITERAL;
             $literal_type = $LT_HEX;
-            $token = '\\x{' . lc($hex_digits) . '}' ;
+            my $len = length $raw_hex_digits;
+            my $hex_digits = '00000000' . lc($raw_hex_digits);
+            if ($fo_braced_hex) {
+                # Only Perl?
+                $token = '\\x{' . substr($hex_digits, ($len + $len % 2) * -1 ) . '}';
+            } elsif ($len <= 2) {
+                # All flavours cope with two hex digits
+                $token = '\\x' . substr($hex_digits, -2);
+            } elsif ($fo_U_and_eight_hex) {
+                # Only Python?
+                $hex_digits = '00000000' . $hex_digits;
+                if ($len > 4) {
+                    $token = '\\U' . substr($hex_digits, -8);
+                } else {
+                    $token = '\\u' . substr($hex_digits, -4);
+                }
+            } elsif ($len <= 4) {
+                $token = '\\u' . substr($hex_digits, -4);
+            } elsif ($len <= 6 && $fo_u_braced_six) {
+                # Only Ruby?
+                $token = '\\u{' . substr($hex_digits, $len * -1) . '}';
+            } else {
+                $token = "# Unicode hex too long: hex-$raw_hex_digits\n";
+            }
         } elsif ($line =~
             / \G oct (?: al )? [-_] ( [0-7]{1,3} )
-                                     ( \s | $ ) /xgci) {
+                                     ( \s | $ | , ) /xgci) {
             # octal-<1-to-3-octal-digits>
             my $octal_digits = $1; $delimiter = $2;
             $token_type = $TT_LITERAL;
@@ -1182,7 +1354,7 @@ sub flag_value {
         } elsif ($line =~
             / \G ( (?: back [_-]? ref (?: erence )? | captured )
                     [-_] ( \d+ ))
-                    (?: \s | $ ) /xgci) {
+                    (?: \s | $ | , ) /xgci) {
             # backref-<number>
             # or captured-<number>
             $token_raw = $1;
@@ -1194,7 +1366,7 @@ sub flag_value {
             / \G ( (?: back [_-]? ref (?: erence )? [-_] rel (?: ative )? 
                        | captured [-_] previous )
                    [-_] ( \d+ )
-                 ) (?: \s | $ ) /xgci) {
+                 ) (?: \s | $ | , ) /xgci) {
             # backref-relative-<number>
             # or captured-previous-<number>
             $token_raw = $1;
@@ -1202,33 +1374,21 @@ sub flag_value {
             $token_type = $TT_LITERAL;
             $literal_type = $LT_BACKREF;
             $token = '-' . $backref_number;
-            #} elsif ($line =~
-            #    / \G ( back [_-]? ref (?: erence )? [-_] rel (?: ative )? [-_]
-            #           ( \d+ )
-            #         ) (?: \s | [,] \s | $ ) /xgci) {
-            #    # backref-relative-<number>
-            #    $token_raw = $1;
-            #    my $backref_number = $2;
-            #    $token_type = $TT_LITERAL;
-            #    $literal_type = $LT_BACKREF;
-            #    $token = '-' . $backref_number;
+ 
         } elsif ($line =~
             / \G ( (?: back [_-]? ref (?: erence )?
                       | captured )
                   [-_]  ( [a-z] [a-z0-9\-_]* )
-                 ) (?: \s | $ ) /xgci) {
+                 ) (?: \s | $ | , ) /xgci) {
             # backref-<name> or captured-name
             $token_raw = $1;
             my $backref_name = $2;
             $token_type = $TT_LITERAL;
             $literal_type = $LT_BACKREF;
             $token = $backref_name;
-
-
-            
-                        
+                  
         } elsif ($line =~ / \G ( [a-z] [-_a-z]*? [a-z] )
-                               ( \s | $       ) /xgci) {
+                               ( \s | $ | , ) /xgci) {
             # 'word' - something starting and ending with a letter, containing
             # only letters, hyphens and underscores
             $token = $1; $delimiter = $2;
@@ -1286,27 +1446,43 @@ sub flag_value {
                                    ) = ' ' . $macro_lines[0];
                             pos($line) = $token_start_pos;
                             $token_type = $TT_SAME_LINE_MACRO;
-                            gnt();  # Recurse to handle token just inserted
+                            if ($gnt_depth++ > $MAX_GNT_DEPTH) {
+                                $token_type = $TT_ERROR;
+                                $token = "Recursion limit: $token_lc";
+                                substr($line,
+                                   $token_start_pos
+                                   ) = '"Error: Recursion detected here" ';
+                            } else {
+                                gnt();  # Recurse to handle token just inserted
+                                $gnt_depth--;
+                            }
                             return; ####### ----------->>>>>>>>>>
                         } else {
-                            @macro_lines = reverse @macro_lines;
-    
-                            for my $idx (0 .. scalar @macro_lines - 1) {
-                                unshift @ire_lines, $temp_indent . $macro_lines[$idx];
+                            if (scalar @ire_lines > $MAX_IRE_LINES) {
+                                unshift @ire_lines, "# ERROR: Recursion detected\n";
+                            } else {
+                                @macro_lines = reverse @macro_lines;
+                                unshift @ire_lines, "\n";        
+                                for my $idx (0 .. scalar @macro_lines - 1) {
+                                    unshift @ire_lines, $temp_indent . $macro_lines[$idx];
+                                }
+                                
                             }
                             $token_type = $TT_NO_MORE;
                             return; ####### ----------->>>>>>>>>>
                         }
-
                     }
-                    if (   substr($token_lc, 0, $NON_LENGTH) eq $NON_WORD
+                    if (   substr($token_lc, 0, $NON_LENGTH) eq $NON_PREFIX
                         && substr($token_lc, $NON_LENGTH, 1) =~ / [-_] /x ) {
                         # Word starts with 'non-' or local equivalent
                         $word_converted = substr($word_converted, $NON_LENGTH);
                         $word_is_negated = 1;
                     }
                     my $synonym = $synonyms{$word_converted};
+                    $word_is_negated = 1 if exists $negated_synonyms{$word_converted};
                     $word_converted = $synonym if $synonym;
+
+                    
                     my $singular = $is_plural_of{$word_converted};
                     if ($singular) {
                         $word_converted = $singular;
@@ -1365,7 +1541,8 @@ sub flag_value {
                                    \z /x) {
                         # up-<name> or unicode-property-<name>
                         my $up_name = $1;
-                        if ($up_name =~ / \A  l (?: ult | utl | tul | tlu | ltu | lut  ) \z /x) {
+                        if ($option_flavour eq 'perl'
+                            && $up_name =~ / \A  l (?: ult | utl | tul | tlu | ltu | lut  ) \z /x) {
                             # Name is one of the synonyms for \p{L&}
                             $up_name = 'L&';
                         }
@@ -1506,10 +1683,18 @@ sub flag_value {
                             }
                         } elsif ($token_type = $TT_NUMBER) {
                             if ( $token != $prev_prev_token + 1 ) {
-                                _error("Numbers must be consecutive");
+                                if ($pl_ref->{min} == 0) {
+                                    # zero or <number>
+                                    # so make it optional <number>
+                                    $pl_ref->{optional} = 1;
+                                    $pl_ref->{min} = $token;
+                                    $pl_ref->{max} = $token;                                    
+                                } else {
+                                    _error("Numbers must be consecutive");
+                                }
                                 gnt();
                             } else {
-                                # Number or Number
+                                # Number or Number+1
                                 $pl_ref->{max} = $token;
                                 gnt();
                             }
@@ -1549,9 +1734,29 @@ sub flag_value {
             $ambiguity_seen = 1;
             gnt();
         } elsif ($token_type eq $TT_LITERAL) {
+
+            if ($word_is_negated) {
+                if ($line_has & $LINE_HAS_NEGATED_LITERAL) {
+                    _error("Multiple negated literals are not allowed");
+                }
+                $line_has |= $LINE_HAS_NEGATED_LITERAL;
+                if ($line_has & $LINE_HAS_LITERAL) {
+                    _error("Mixed negated and non-negated literals are not allowed");
+                }
+            } else {
+                if ($line_has & $LINE_HAS_NEGATED_LITERAL) {
+                    _error("Mixed negated and non-negated literals are not allowed");
+                }                
+            }
+            if (   $line_has & $LINE_HAS_BEEN_NEGATED
+                || $word_is_negated) {
+                if ($literal_type eq $LT_SEQUENCE) {
+                    _error("Multi-character quoted strings cannot be negated");
+                }
+            }
             $line_has |= $LINE_HAS_LITERAL;
             $line_has |= $LINE_HAS_SEQUENCE_LITERAL if $literal_type eq $LT_SEQUENCE;
-   
+            
             if ($line_has & $LINE_HAS_BEEN_NEGATED
                 && $word_is_negated) {
                 _error("Negated literal $token_raw not allowed when entire line negated");
@@ -1678,14 +1883,25 @@ sub flag_value {
                 $line_has |= $LINE_HAS_OPTIONAL;
                 $pl_ref->{optional} = 1;
                 gnt();
-            } elsif ($token eq $kw{minimal} || $token eq $kw{possessive} ) {
-                if ($line_has & $LINE_HAS_QUANTIFIER ) {
-                    $pl_ref->{greed} = $token eq $kw{minimal} ? 'minimal'
-                                                              : 'possessive';
+            } elsif ($token eq $kw{minimal}  ) {
+                if ($line_has & $LINE_HAS_QUANTIFIER
+                 || $line_has & $LINE_HAS_OPTIONAL) {
+                    $pl_ref->{greed} = 'minimal';
                 } else {
-                    _error("Only allowed after a quantifier: $token_raw");
+                    _error("'$token_raw' is only allowed after a quantifier");
                 }
                 gnt();
+            } elsif ($token eq $kw{possessive} ) {
+                if ( not ($line_has & $LINE_HAS_QUANTIFIER) ) {
+                    # No quantifier - synthesise one
+                    $pl_ref->{min} = 1;
+                    $pl_ref->{max} = 1;
+                }
+                $pl_ref->{greed} = 'possessive';
+                ## } else {
+                ##     _error("Only allowed after a quantifier: $token_raw");
+                ## }
+                gnt();                
             } elsif (   $token eq $kw{followedby}
                      || $token eq $kw{followed}
                      || $token eq $kw{preceding}
@@ -1757,6 +1973,9 @@ sub flag_value {
             } elsif (   $token eq $kw{capture}
                      || $token eq $kw{as}
                      || $token eq $kw{captureas} ) {
+                if ($line_has && $LINE_HAS_CAPTURE) {
+                    _error("Multiple captures on one line: $token");
+                }
                 $line_has |= $LINE_HAS_CAPTURE;
                 $pl_ref->{capture_number} = ++$capture_count;
                 if ($token eq $kw{capture}) {
@@ -1787,6 +2006,10 @@ sub flag_value {
                         _error("capture as: name is missing");
                     } else {
                         $pl_ref->{capture} = $token_raw;
+                        if ($token_raw !~ / ^ [_a-z] \w* $ /ix) {
+                            _error("capture as: name $token_raw is invalid");
+                            $pl_ref->{capture} =~ s/ \W /_/gx;
+                        }
                         gnt();
                     }
                 } else {
@@ -1853,7 +2076,7 @@ sub _warning {
 }
 sub _error {
     my ($text) = @_;
-    _output("Error: $text\n");    
+    _output("# Error: $text\n");    
 }
 sub _trim {
     my ($text) = @_;
@@ -1965,10 +2188,13 @@ sub _generate_regex {
 #   1) Reference to root node of regex structure
 #   2) Ref to options structure
 #   3) Ref to ancestral information
+#   4) Capture names stack, for suffixed capture name handling
+#   5) Ref to capture names array, or undef
 #
 # Returns:
 #   1) Regex string
 #   2) Required modes bit-map
+#   3) Replacement string, or undef if no replacement
 #
 #   The required-modes bit-map is the logical-or of the overall modes required
 #   by this node and all its children. It is used when the entire generated
@@ -2006,8 +2232,9 @@ sub _generate_regex {
 #   - case sensitivity
 #   - ascii/unicode
 #   - quoted space means whitespace
+#   - in replacement
 #
-# OPTIONS
+# OPTIONS - NOT USED
 # -------
 # Lots of options possible:
 #   partial or full match
@@ -2023,7 +2250,7 @@ sub _generate_regex {
 #           emulate %+ for named captures
 #           capture into named variables
 #       JavaScript
-#           generate string  '\\d\\\\\'   or regex  /\d\\/
+#           generate string  '\\d\\\\'   or regex  /\d\\/
 #              depending on whether you want all your toothpicks falling the same way :-)
 #   generate free-text (/x) regex
 #   embed original comments
@@ -2035,13 +2262,20 @@ sub _generate_regex {
 # there doesn't seem to be much reason to apply those to apply part of a regex,
 # and switching them on and off would produce an extra confusing regex.
 #
+# The exception might be for macro expansions: the macro expansion might be
+# compressed by omitting not including the wordy and any wordy comments. 
+#
 # They are also likely to be preferences that do not change, so they might best
 # be handled by a config file that overrides the default settings, with the
 # ability to also specify them on the invocation line. Priority would be
 # highest from invocation-line, then config file, then lowest from system default
 
  
-    my ($node_ref, $opts_ref, $ancestral_ref) = @_;
+    my ($node_ref,
+        $opts_ref_unused,
+        $ancestral_ref,
+        $capture_names_stack,
+        $capture_names_ref) = @_;
 
     my $re = '';
     my $re_class = '';  # C = capturing, G group-only, P = other parentheses
@@ -2056,6 +2290,7 @@ sub _generate_regex {
     my ($has_capture, $has_optional, $has_mode, $has_quant, $group_type);
     my $mode_string;
     my $quant_text;
+    my $atomic_option;
     my $capture_group_name = '';
 
     my $required_modes  = 0;     # Bit-map of modes that will bubble up to top
@@ -2106,6 +2341,9 @@ sub _generate_regex {
             my $pause = 'branch-reset';
             $combined_ref->{branch_reset} = 1;
             $mode_string_on .= '|';
+        } elsif ($mode_letter eq 'R') {
+            # Replacement
+            
         } elsif ($mode_letter) {
             _error ("Internal error: mode_letter = $mode_letter");
         }
@@ -2117,16 +2355,21 @@ sub _generate_regex {
     $has_capture = defined $node_ref->{capture};
     if ($has_capture) {
         $capture_group_name = $node_ref->{capture} || '';
-        ##if ($target{does_capture_name}) {
-        ##    $capture_group_name = $target{capture_name_start}
-        ##                        . $capture_group_name
-        ##                        . $target{capture_name_end};
-        ##} else {
-        ##    $capture_group_name = '';
-        ##}
+        
+        if ( substr($capture_group_name, 0, 2) eq '__') {
+            if ($capture_names_stack eq '' ){
+                # No names on stack, so drop the double underscores
+                $capture_names_stack = substr($capture_group_name, 2);
+            } else {
+                # Name to append to, so append with one underscore
+                $capture_names_stack .= substr($capture_group_name, 1);
+            }
+        } else {
+            # Not a leading double_underscore name
+            # So just use the name
+            $capture_names_stack  = $capture_group_name;
+        }
     }
-    
-    ## $has_capture, $has_optional, $has_mode, $has_quant, $group_type
     
     $has_optional = $node_ref->{optional};
     my $was_optional = 0;
@@ -2135,6 +2378,7 @@ sub _generate_regex {
     #  Coalesce optional with minimum if possible
     my ($quant_min, $quant_max);
     $quant_text = '';
+    $atomic_option = 0;
     if ($has_quant) {
         $quant_min = $node_ref->{min};
         $quant_max = $node_ref->{max};
@@ -2144,7 +2388,7 @@ sub _generate_regex {
             $quant_min    = 0;
         }
     } else {
-        # No quant.
+        # No quant
         # Turn 'optional' to a quant, so that we can
         # handle optional/non-greedy
         if ($has_optional) {
@@ -2181,10 +2425,18 @@ sub _generate_regex {
         } elsif ($quant_min eq $quant_max) {
             $quant_text = "{$quant_min}";
         }
-        #  Add ? for minimal, + for possessive
+        #  
+        
         if (defined $node_ref->{greed}) {
-            $quant_text .= ($node_ref->{greed} eq 'minimal') ? '?'
-                                                             : '+';
+            if ($quant_text eq ''
+             || $option_flavour eq '.net' ) {
+                $atomic_option = 1;
+            } else {
+                # Have quantifier, and flavour supports possessive
+                # Add ? for minimal, + for possessive 
+                $quant_text .= ($node_ref->{greed} eq 'minimal') ? '?'
+                                                                 : '+';
+            }
         }
     }
     my $child_count = 0;
@@ -2317,11 +2569,11 @@ sub _generate_regex {
                     $strings = $xsp . $encoded_val;
                 }
             } elsif ($lit_type eq $LT_RANGE) {
-                $char_control[$sing_or_plural] = 99;
+                $char_control[$sing_or_plural] = 99;    # Force character class
                 $chars[$sing_or_plural] .= $lit_val;
                 
             } elsif ($lit_type eq $LT_POSIX) {
-                $char_control[$sing_or_plural] = 99;
+                $char_control[$sing_or_plural] = 99;    # Force character class
                 $chars[$sing_or_plural] .= $lit_val;
                 
             } elsif ($lit_type eq $LT_GROUP)  {
@@ -2336,7 +2588,7 @@ sub _generate_regex {
 
                         $single_char[$sing_or_plural] = '0-9';
                         $chars[$sing_or_plural] .= '0-9';                                
-                        $char_control[$sing_or_plural] = 99;
+                        $char_control[$sing_or_plural] = 99;  # Force character class
     
                         if ($lit_negated) {
                             ## This looks a bit hackish...
@@ -2404,7 +2656,7 @@ sub _generate_regex {
                                                      0);
                     $chars[$sing_or_plural] .= $chars_format;                                
                     if ($force_class) {
-                        $char_control[$sing_or_plural] = 99;
+                        $char_control[$sing_or_plural] = 99;  # Force character class
                     } else {
                         $char_control[$sing_or_plural]++;
                     }
@@ -2421,10 +2673,19 @@ sub _generate_regex {
                     $char_control[$sing_or_plural]++;                                     
                 } elsif ($lit_val eq 'character') {
                     $char_control[$sing_or_plural] = 1;
-                    $single_char[$sing_or_plural]  = '.';
-                    $chars[$sing_or_plural]        = '<internal error 2>';
+                    if ($option_flavour eq 'javascript') {
+                        # Javascript - any character. No /s, so have to force
+                        # character class and output \s\S
+                        $char_control[$sing_or_plural] = 99;  # Force character class
+                        $chars[$sing_or_plural] .= '\s\S';    
+                    } else {
+                        $required_modes |= $REQUIRE_S_MODE;
+                        $single_char[$sing_or_plural]  = '.';
+                        $chars[$sing_or_plural]        = '<internal error 2>';
+                    }
+
                     ## $strings = $xsp . '.';  # any character, assuming /s mode
-                    $required_modes |= $REQUIRE_S_MODE;
+                    
                 } elsif (   $lit_val eq 'whitespace') {
                     $single_char[$sing_or_plural] = ($lit_negated || $overall_negated) ? "\\S" : "\\s";
                     $chars[$sing_or_plural] .= "\\s";
@@ -2487,7 +2748,22 @@ sub _generate_regex {
                 # Back-reference
                 # It counts as a string for some purposes
                 $string_count++;
-                my $back_ref = '\\g{' . $lit_val . '}';
+                my $back_ref;
+                if ($fo_all_backrefs_named) {
+                    $back_ref = $fo_named_backref_start
+                              . $lit_val
+                              . $fo_named_backref_end;
+                } elsif ($lit_val =~ / ^ \d+ $ /x) {
+                    # Numeric backref
+                    # Use old-style \n
+                    $back_ref = "\\" . $lit_val;
+                } elsif ($fo_named_backref_start eq '') {
+                    _error("Cannot do named backref for $option_flavour");
+                } else {
+                    $back_ref = $fo_named_backref_start
+                              . $lit_val
+                              . $fo_named_backref_end;
+                }
                 $strings .= ($strings ? ($xsp . '|' . $xsp) : '') . $back_ref;
                 
             } else {
@@ -2547,7 +2823,12 @@ sub _generate_regex {
         my $assembled = '';
         for my $child_ref (@{$node_ref->{'z_children'}} ) {
             # for each child
-            my ($re_part, $x) = _generate_regex($child_ref, undef, $combined_ref);
+            my ($re_part, $x) = _generate_regex($child_ref,
+                                                undef,
+                                                $combined_ref,
+                                                $capture_names_stack,
+                                                $capture_names_ref,
+                                                );
             $required_modes |= $x;
             $assembled .= $re_part;
             debug ("assembled: $assembled");
@@ -2671,18 +2952,21 @@ sub _generate_regex {
         # Convert group-only parentheses that completely enclose
         # the partial regex to a capture group.
         # Assumes that the partial regex is fully-enclosed by a non-capturing
-        # group: a non-fully capturing re such as (?: a )(?: b) would get
-        # converted to ( a)(?: b) which captures the wrong stuff.
+        # group: a non-fully-enclosed re such as (?: a )(?: b) would get
+        # converted to ( a) (?: b) which captures the wrong stuff.
         
         # Change (?: to (
-        
-        $capture_name[$node_ref->{capture_number}] = $capture_group_name;
-        if ($target{does_capture_name} && $capture_group_name ne '') {
+
+        if (defined $capture_names_ref) {
+            $capture_names_ref->[$node_ref->{capture_number}] =
+                $capture_group_name ? $capture_names_stack : '';
+        }   
+        if ($fo_does_capture_name && $capture_group_name ne '') {
             my $replacement = '('
-                            . $target{capture_name_start}
-                            . $capture_group_name
-                            . $target{capture_name_end};
-            $re =~ s< \A \s* [(] [?] [:] ><$replacement>x; 
+                            . $fo_capture_name_start
+                            . $capture_names_stack
+                            . $fo_capture_name_end;
+            $re =~ s< \A \s* [(] [?] [:] ><$replacement>x;
         } else {
             $re =~ s/ \A
                       ( (?: \Q$MAGIC_MARKER\E [^\n]* \n ) ? )
@@ -2696,9 +2980,9 @@ sub _generate_regex {
             # capture into the %+ hash that Perl 5.10 uses.
             ## For Perl 5.8, the $^N syntax could be used instead of keeping
             ## track of the capture number 
-            if ($target{early_perl_names}) {
+            if ($fo_early_perl_names) {
                 $re .= '(?{$+{'
-                      . $capture_group_name
+                      . $capture_names_stack
                       . '} = $'
                       . $node_ref->{capture_number}
                       . '}';
@@ -2710,18 +2994,19 @@ sub _generate_regex {
         
         ## Should share some code with group_to_capture
         
-        $capture_name[$node_ref->{capture_number}] = $capture_group_name;
-        if ($target{does_capture_name} && $capture_group_name ne '') {
-            $re = '(' . $target{capture_name_start}
-                      . $capture_group_name
-                      . $target{capture_name_end}
+        if (defined $capture_names_ref) {
+            $capture_names_ref->[$node_ref->{capture_number}] =
+                $capture_group_name ? $capture_names_stack : '';
+        }   
+        if ($fo_does_capture_name && $capture_group_name ne '') {
+
+            $re = '(' . $fo_capture_name_start
+                      . $capture_names_stack
+                      . $fo_capture_name_end
                       . $re
                       . ')'
                       ;
-                                            
-           ## $capture_group_name = $target{capture_name_start}
-           ##                     . $capture_group_name
-           ##                     . $target{capture_name_end};
+                   
         } else {
             # It's an unnamed capture, or target doesn't directly support named captures
             # So we do a plain capture
@@ -2734,7 +3019,7 @@ sub _generate_regex {
             #
             # For Perl prior to 5.10, we use Perl embedded code to do the named
             # capture into the %+ hash that Perl 5.10 uses.
-            if ($target{early_perl_names} && $capture_group_name ne '') {
+            if ($fo_early_perl_names && $capture_group_name ne '') {
                 ## e.g. (?{$+{punc} = $1})
                 $re .= '(?{$+{'
                       . $capture_group_name
@@ -2772,9 +3057,9 @@ sub _generate_regex {
     };
 
     my $append_quant_if_any = sub {
-        # Appends any quamtifiers, laziness or atomicity to the partial regex
-        # The quantifiers may have had 'optional' coalesced, e.g. if they were
-        # {1,3} but there was also an 'optional', we use {0,3}
+        # Appends any quantifiers, laziness or possessiveness to the partial
+        # regex. The quantifiers may have had 'optional' coalesced, e.g. if they
+        # were {1,3} but there was also an 'optional', we use {0,3}
         $re .= $quant_text;
     };
 
@@ -2827,6 +3112,9 @@ sub _generate_regex {
         $re = $look_start . $re . ')';
     }
     
+    if ($atomic_option) {
+        $re = '(?>' . $re . ')';
+    }
     
     if ($node_ref->{either_start} ) {
         # Start of alternation
@@ -2913,8 +3201,9 @@ sub _char_non_class_encode {
     
     my ($ch, $space_option) = @_;
     my $encoded_ch = _char_encode($ch);
-    my $BACKSLASH_B_MUTATES = 1;    # True for Perl: backspace within character
+    my $BACKSLASH_B_MUTATES = 1;    # True for Perl and .Net: backspace within character
                                     #   class, word boundary outside
+                                    
     if ($ch eq "\b" && $BACKSLASH_B_MUTATES) {
         # It is a backspace, and \b is not backspace outside char classes
         return "\\x" . sprintf('%02x', ord($ch));
@@ -3057,10 +3346,10 @@ sub _split_regex {
             $out_line .= $gened_indented;
             
             ($orig, $orig_comment) = $rest =~ /
-                          (.*)                  # capture zero or more any-char
+                          (.*)                  # capture zero or more chars
                           (?:                   # optional 
                               magic-comment     #     'magic-comment'
-                              (.*)              #     capture zero or more any-char
+                              (.*)              #     capture zero or more chars
                           )? 
                                               /x;
                                                                                                 # optional
@@ -3157,15 +3446,21 @@ sub _wre_to_tre {
     # Passed:
     #   - a string containing a complete wordy regular expression
     #   - any options that don't form part of the input regex
+    #   - reference to capture-names array, or undef
     # Returns:
-    #   - a string containing the equivalent conventional regular expression
+    #   1) a string containing the equivalent conventional regular expression
     #   - a code indicating whether there were any errors, warnings or observations
     #   - if no errors or warnings: a null string
     #     Otherwise, a string (typically multi-line) containing the input wre
     #     with each line prepended with its line numbers and a colon,
     #     interspersed with any error or warning lines prepended with error: or
     #     warning:
-    #   
+    #
+    #     If the reference to capture-names array is defined, the array is
+    #     populated with the names of named captures, in the positions that
+    #     correspond to those captures. So if the third capture is named, its
+    #     name will be saved in position index [3].
+    #
     # Options:
     #   Passed in as a reference to a hash
     #   Implemented:
@@ -3173,6 +3468,7 @@ sub _wre_to_tre {
     #       embed_original (boolean)
     #       wrap_output    (boolean)
     #       regex_delimiters (one character, or a matched pair)
+    #       flavour       (text)
     #   Candidate stuff:
     #   - Source details:
     #       Text format: 
@@ -3199,7 +3495,7 @@ sub _wre_to_tre {
 
     
     
-    my ($ire_string, $arg_options_ref) = @_;
+    my ($ire_string, $arg_options_ref, $capture_names_ref) = @_;
 
     my $options_ref = defined $arg_options_ref ? $arg_options_ref : {};
     
@@ -3210,11 +3506,67 @@ sub _wre_to_tre {
     my $prefer_class_to_escape
                          = $options_ref->{'prefer_class_to_escape'};
                          
+    $option_flavour      = $options_ref->{'flavour'} || 'perl';
+    
+    $option_flavour = lc($option_flavour);
+    
+    $capture_count = 0;
+                         
     my $solo_space_as_class    = $DEFAULT_SOLO_SPACE_AS_CLASS;
     if (defined $options_ref->{'solo_space_as_class'}) {
         $solo_space_as_class = $options_ref->{'solo_space_as_class'};
     }
     
+    # Set flavour-option globals
+    
+    my $flavour_error = set_flavour_options($option_flavour);
+    _error($flavour_error) if $flavour_error;
+    
+    ##if ($option_flavour eq 'java') {
+    ##    $fo_named_backref_start = '\\k<';
+    ##    $fo_named_backref_end   = '>';
+    ##} elsif ($option_flavour eq 'javascript') {
+    ##    $fo_does_capture_name   = 0;
+    ##    $fo_free_space_allowed  = 0;
+    ##    $fo_single_line_allowed = 1;
+    ##} elsif ($option_flavour eq '.net') {
+    ##    $fo_all_backrefs_named  = 1;
+    ##    $fo_named_backref_start = '\\k<';
+    ##    $fo_named_backref_end   = '>';        
+    ##} elsif ($option_flavour eq 'pcre') {
+    ##    $fo_capture_name_start  = '?P<';
+    ##    $fo_capture_name_end    = '>';           
+    ##    $fo_named_backref_start = '(?P=';
+    ##    $fo_named_backref_end   = ')';
+    ##} elsif ($option_flavour eq 'perl') {
+    ##    $fo_all_backrefs_named  = 1;
+    ##    $fo_named_backref_start = '\\g{';
+    ##    $fo_named_backref_end   = '}';        
+    ##    $fo_braced_hex     = 1;
+    ##    $fo_u_and_four_hex = 0;
+    ##} elsif ($option_flavour eq 'php') {
+    ##    $fo_capture_name_start  = '?P<';
+    ##    $fo_capture_name_end    = '>';          
+    ##    $fo_named_backref_start = '(?P=';
+    ##    $fo_named_backref_end   = ')';        
+    ##} elsif ($option_flavour eq 'python') {
+    ##    $fo_capture_name_start  = '?P<';
+    ##    $fo_capture_name_end    = '>';        
+    ##    $fo_named_backref_start = '(?P=';
+    ##    $fo_named_backref_end   = ')';                
+    ##} elsif ($option_flavour eq 're2') {
+    ##    $fo_free_space_allowed = 0;
+    ##} elsif ($option_flavour eq 'ruby') {        
+    ##} elsif ($option_flavour eq 'xregexp') {
+    ##    $fo_does_capture_name   = 0;
+    ##
+    ##} elsif ($option_flavour eq '') {
+    ##} elsif ($option_flavour eq '') {
+    ##} elsif ($option_flavour eq '') {
+    ##} elsif ($option_flavour eq '') {
+    ##} elsif ($option_flavour eq '') {        
+    ##}
+    ##
     $option_free_space_output    = defined $free_space     ? $free_space     : 1;
     $option_embed_original_regex = defined $embed_original ? $embed_original : 1;
     $option_delimit_regex        = defined $wrap_output    ? $wrap_output    : 1;
@@ -3273,10 +3625,14 @@ sub _wre_to_tre {
     #    print "Initial indentation error\n";
     #}
     
-    
-    my ($regex, $overall_modes) = _generate_regex($root_node);
+    my $capture_names_prefix = '';
+    my ($regex, $overall_modes) = _generate_regex($root_node,
+                                                  undef,
+                                                  undef,
+                                                  $capture_names_prefix,
+                                                  $capture_names_ref);
 
-    if ($overall_modes || $wrap_output) {
+    if ($overall_modes || $wrap_output || $xsp) {
         my $mode_text = '';
         
         $mode_text .= 'p' if  $overall_modes & $REQUIRE_P_MODE;
@@ -3287,7 +3643,8 @@ sub _wre_to_tre {
         if ($wrap_output) {
             $regex = $regex_starter . $regex . $regex_finisher . $mode_text;
         } else {
-            $regex = '(?' . $mode_text . ':' . $xsp . $regex . $xsp . ')';
+            ## $regex = '(?' . $mode_text . ':' . $xsp . $regex . $xsp . ')';
+            $regex = '(?' . $mode_text . ')' . $xsp . $regex;
         }
     }
     
@@ -3304,7 +3661,10 @@ sub _wre_to_tre {
 sub main_line {
     # Reads a wre from a file, generates and prints a conventional regex
 
-   
+    my $infile = $ARGV[0] || '';
+    if ($infile eq '') {
+        print "Enter wordy, terminate with Ctl-D\n";
+    }
     my $wre = slurp_stdin();
     print (_wre_to_tre($wre, {free_space => 1}) );
     print "\n------------------------\n";
@@ -3441,7 +3801,8 @@ sub process_line {
                     } elsif (defined $child_ref->{literal}) {
                         # OK, previous sub-line had some matcher(s)
                     } else {
-                        _error("No matcher found before 'then'");
+                       ### _error("No matcher found before 'then'");
+                       _observation("No matcher found before 'then'");
                     }
                 }
             }
@@ -3649,6 +4010,16 @@ To Do:
 
     Serious Bugs
         
+        [also check the ToDo entries in t_wre.pl]
+        
+        - Some generated terse regexes for different flavours are almost
+          certainly wrong. They generally haven't been tested (except the Perl
+          flavour) and the documentation on which they are based is of variable
+          accuracy. Even MSDN seems to have significant errors in the details of
+          .NET regexes.
+        
+        - Outdent beyond first line causes rest of wordy to be ignored
+        
         - Ordering capture->optional->numeric quantifiers.
           If not in this order, no error is reported but the regex generated is
           unlikely to be what the user wanted. E.g.
@@ -3666,27 +4037,25 @@ To Do:
           The string literals are ignored. This has a different cause than the
           defect above: but could also be 'fixed' by disallowing the mixture.
           
-        - Negated strings are treated as non-negated. They should be flagged as
-          as error (the nearest valid construct is a negative lookeahead)
-          
-        - Negated unicode-properties generate an incorrect regex (doubly negated)
-        - Mixed negatives and non-negatives should be reported as an error.
-          Possible exception for a group and its negation, e.g.
-             whitespace or non-whitespace
-          as that is a Javascript idiom for 'any character at all'.
-          But probably better to recognise it in the other direction, and
-          convert it to 'any-ch'. Generation for flavours with no other way of
-          specifying 'any-character' will have to cope with this.
-          
+        - Negated unicode-properties generate an incorrect regex
+           (doubly negated) [Appears to have been fixed - cannot reproduce]
+
+        - Character class subtraction is not supported. Should allow:
+                letter not a e i o u   # consanant
+                a-z not c i k m o v    # Part of UK postcode
+                
         - 'not character' and 'non-character' are not flagged as errors
-        
-        - Multiple negated literals, e.g.
-                non-digit non-whitespace
-          should be reported as an error. This is a notation change, as multiple
-          negated items were allowed (as long as there were no non-negated).
-          However, the semantics are strained: the usual interpretation of 
-          'non-whitespace or non-digit' is [\S\D], which matches any character
-          whereas what is usually wanted is [^\s\d]
+     
+    Not so serious bugs:
+    
+        - PCRE and Perl (at least) allow negated groups within a negated
+          character class such as [^\W_]. This is meaningful and useful, and
+          presumably it gets used.
+          The equivalent wordy is 'not non-word-char _', but it is reported as
+          an error, and the incorrect terse [^\w_] is generated
+       
+        - /x mode generates incorrect regex when used in conjunction with a
+          define that used the (so far undocumented)  __<name> syntax
           
     Required for quality control
     
@@ -3787,6 +4156,8 @@ To Do:
         
             - Existing method has start-of-string/end-of-string keywords
             - Could have match-entire-string/mes keyword
+            - Could have new wordy keywords: can-start-anywhere, can-end-anywhere
+            - Could have matches-entire, starts-with and contains as keywords
             - Could provide wre_mes() function to return a match-entire regex
             - Could provide wre_mp() function to return a match-part regex
             - Could provide match(regex, subject) function that wraps regex with
@@ -3798,15 +4169,41 @@ To Do:
             - Don't use match-all to mean match-entire, as 'all' is used to mean
               global , e.g. Python's findall(regex, subject) function.
               
+        Current Working Proposal:
+        =========================
+        A wordy with one of the keywords:
+            matches-entire, starts-with, contains
+        would generate a terse equivalent that would do that type of match
+        regardless of the usual semantics of the routine chosen. To avoid
+        confusion, the generated terse should always have a comment specifying
+        which type of match it will do, at least for languages where there is a
+        choice of routine. This comment should appear even if the wordy is not
+        being incorporated as comments in the terse reex.
+            matches-entire   ^ regex_with_no_top_level_alternation  $
+                             ^ (?:regex_with_top_level_alternation) $
+            starts-with      ^ regex_with_no_top_level_alternation  .*
+                             ^ (?:regex_with_top_level_alternation) .*
+            ends-with        ^ .* regex_with_no_top_level_alternation  $
+                             ^ .* (?:regex_with_top_level_alternation) $                           
+            contains         .* regex_with_no_top_level_alternation  .*
+                             .* (?:regex_with_top_level_alternation) .*
+        
+          with dot-matches-all enabled.
+          
+        The leading .* for 'contains'might be a performance issue, depending on
+        how well the engine handles it. If the regex itself starts with .* or
+        [/s/S]* and an extra extra .* is prepended, there might be a lot of
+        backtracking (except, of course, for re2)
+              
         Keyword 'sequence' or 'seq':
            following tokens are a sequence unless explicitly or'd
             as date  seq  two digits       - or /      two digits      - or /      two digits
-        =   as date       two digits  then - or / then two digits then - or / then two digits
+        =   as date       two digits  then -    / then two digits then -    / then two digits
         =   as date
                 two digits
-                - or /
+                -  /
                 two digits
-                - or /
+                -  /
                 two digits
         Parenthesised spans:
                     a  then  capture( : then two digits)  then  b
@@ -3975,7 +4372,8 @@ To Do:
             Unicode modes as currently implemented are very Perl-oriented.
             The overall modes (Unicode and ASCII) are probably OK, at least as
             a crude global Unicode control, meaning "do everything in as Unicode
-            a fashion as possible in this flavour" or "exclude all Unicode".
+            a fashion as possible in this flavour" and "exclude all Unicode",
+            respectively.
             
         Ordering of string/char class items - maybe do multiple classes if
             solo characters separated by strings or assertions, to preserve the
@@ -4010,12 +4408,41 @@ To Do:
                 14/11/201389       # 14/11/2013
                 14/11/2013abc      # 14/11/2013
                 42/11/2013         #  2/11/2013
+                29/02/2011         #  9/02/2011
+                31/04/2000         #  1/04/2000
              do not match, as they would if unanchored?
             The obscure cases where the user actually wants to allow these sorts
             of values are likely to be outweighed by the risk that a user will
-            assume that they are excluded automatically. However, this is mostly
-            an issue to be decided by the writer of the definition, rather than
-            as a syntax issue.
+            assume that they are excluded automatically. This is mostly an issue
+            to be decided by the writer of the definition, rather than a syntax
+            issue. The macros may become quite complex to handle the various
+            combinations of the date being at the start and/or end of the string.
+            
+            Use Cases:
+                - Validate that a string *consists* of the specified type.
+                  (so this would be anchored sos/eos)
+                - Validate that a string *consists* of the specified type,
+                  but allowing leading and trailing white space.
+                  (this would also be anchored)
+                - Used within a larger regex, to validate that the string
+                  *consists* of the specified type at that point, with the
+                  containing regex being responsible for adjacent characters or
+                  zero-width matchers.
+                - Validate that a string *contains* at least one of the
+                  specified type, bordered by whitespace or sos/eos.
+                - Validate that a string *contains* at least one of the
+                  specified type, bordered by punctuation or whitespace or sos/eos.                
+                - Validate that a string *contains* at least one of the
+                  specified type, not bordered by characters that would cause
+                  confusion. e.g. disallow adjacent letters or digits.                 
+            Use Case Variants:
+                - Capture entire match
+                - Capture sub-parts
+                - Capture entire match and sub-parts
+                - Capture sub-parts with names create by appending to
+                  higher-level name
+                
+            
             
             Basic Syntax:
             
@@ -4124,7 +4551,11 @@ To Do:
             
         Disallow single naked digit preceding non-naked. This is to avoid the
          semantic trap where the user writes '2 letters' meaning 'two letters'
-            2 letters     # Not allowed, have to say 'letters 2'
+            2 letters     # Not allowed, have to say
+                          #   letters 2
+                          # or
+                          #   '2' letters
+                          
             2 or letters  # Allowed
             2 4 6 letters # Allowed
             
@@ -4186,7 +4617,7 @@ To Do:
         - Using the embed_source_regex option changes the generated regex, as
           the check for atomicity is affected. The generated regex is still
           correct, just longer than necessary
-
+        - nonls is treated as meaning newlines, should be non-newlines
 
         
 
@@ -4238,8 +4669,9 @@ To Do:
            Implemented: any-character, any-ch. 'any' is a potential semantic
            trap, as 'any letter' would actually mean any character.
         - Pretty output
-        - Unicode character names, e.g. 'unicode-two-women-holding-hands' (which
-          illustrates the question of whether they should have plurals)
+        - Unicode character names, e.g. 'unicode-two-women-holding-hands' (this
+          example also illustrates the question of whether they should have
+          plurals)
         - Generalised multi-word input (non-hyphenated)
         - Version numbers (like Perl 'use 5.12')
         - Change generated overall mode span to suit regex, e.g. for .*
@@ -4463,14 +4895,14 @@ To Do:
             So:
                 'as hh one or two digits then : then as mm two digits'
             becomes:
-                 as hh two digits
+                 as hh one or two digits
                  :
                  as mm two digits
             
             Note that:
                  as time-hhmm one or two digits then : then two digits
             becomes:
-                 as time-hhmm two digits
+                 as time-hhmm one or two digits
                  :
                  two digits
             which is probably not what the user wants. They would have to write:
@@ -5131,7 +5563,7 @@ sub sample_b {
 #When combined with variable declaration, simple scalar assignment to state
 #variables (as in state $x = 42) is executed only the first time. When such
 #statements are evaluated subsequent times, the assignment is ignored.
-# It's not clear whether assigning the result of a unction counts as 'simple
+# It's not clear whether assigning the result of a function counts as 'simple
 # scalar assignment', e.g. does it have to be a simple scalar on both sides?
 
 =for Perl 5.10+
@@ -6230,7 +6662,7 @@ mode ' ' is ows     # Literal space becomes optional whitespace
     'href = '
     opt " '
     get
-        one or more lazy not ^ ' "
+        one or more minimal not ^ ' "
     opt char " '
     ' '
 END_IRE
@@ -6612,7 +7044,7 @@ Matchers(s)
     Back-references
 
 Other Stuff
-    Laziness/Greediness/Atomicity - tie in with quntifiers?
+    Laziness/Greediness/Atomicity - tie in with quantifiers?
     Lookahead/lookbehind
     Patterns/Macros
     Conditions
@@ -7176,6 +7608,70 @@ Procedural Interface
         if ( $data =~ qr/${wret 'a b c'}/gc ) {...}  ## Doesn't work!!
     
     
+define ua-date-dmyyyy
+    either 
+        as __day
+            either opt 0, 1-9  # One or two digit day 1 to 9 or 01 to 09
+            or     1, 0-9      # Two digit day 10 to 19
+            or     2, 0-8      # Two digit day 20 to 28
+        / -
+        as __month
+            either opt 0, 1-9
+            or     1, 0-2
+        / -
+        as __year 
+            '19' '20', two digits
+    or 
+        as __day '29'
+        / -
+        as __month 2 '02'
+        / -
+        as __year 
+            '19' '20', 0 2 4 8, 0 4 8
+    or 
+        as __day '29'
+        / -
+        as __month 2 '02'
+        / -
+        as __year
+            '19' '20', 1 3 5 7 9, 2 6
+    or 
+        as __day '29' '30'
+        / or -
+        as __month 1 3-9 '01' '03' '04' '05' '06' '07' '08' '09' '10' '11' '12'
+        / -
+        as __year 
+            '19' '20', two digits
+    or 
+        as __day '31'
+        / -
+        as __month 1 3 5 7 8 '01' '03' '05' '07' '08' '10' '12'
+        / -
+        as __year
+            '19' '20', two digits
+define es-date-dmyyyy
+    # entire string
+    sos
+    ua-date-dmyyyy
+    eos
+define esw-date-dmyyyy
+    # entire string, allow whitespace before and after
+    sos
+    opt ws
+    ua-date-dmyyyy
+    opt ws
+    eos
+
+
+define date-dmyyyy
+    # Floating, but isolation-checked
+    not preceding letter digit
+    ua-date-dmyyyy
+    not followed-by letter digit
+
+
+date-dmyyyy
+
     
 
 ==============================================================================
@@ -7199,3 +7695,5 @@ See http://www.perl.com/perl/misc/Artistic.html
 
 
 1;  # Package must end with 1
+
+

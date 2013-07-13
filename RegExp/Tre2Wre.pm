@@ -6,7 +6,7 @@ require Exporter;
 our (@ISA) = ("Exporter");
 our (@EXPORT) = qw(tre_to_wre);
 
-use YAML::XS;   ## Not needed for this program - this is a convenience for debugging.
+## use YAML::XS;   ## Not needed for this program - this is a convenience for debugging.
 use IO::Handle;
 STDERR->autoflush(1);
 
@@ -23,7 +23,6 @@ TO DO:
 
 An extra right parenthesis stops processing: remainder of terse regex is ignored
 
-Lexical modes such as (?i) at the very start of a regex are ignored.
 
 
 Error Handling:
@@ -86,7 +85,7 @@ Character class tokeniser:
 
 Note that tokenisers may be switchable between raw string input and various
 types of quoted string, to allow text from a source file to be pasted in. For
-example, \\\\ means a single backslash if supplied in a Javascript string.
+example, \\\\ means a single backslash if supplied in a Java string.
 
  
  ab[12\\w]?  |  cd\dee* (?i: (?:  ss | [g-m]+ tt) uu (?: vv | [wx] )){5,}[34]
@@ -246,7 +245,8 @@ my $MODE_U  = 2048;
 my $MODE_D  = 4096; # Unicode legacy mode: default/dodgy
 my $MODE_NOT_I
             = 8192; # Dummy mode used to mean 'turn /i mode off'
-my $MODE_ALL = ($MODE_NOT_I * 2 ) -1;
+my $MODE_N  = 16384;  # .NET capture-only-explicitly
+my $MODE_ALL = ($MODE_N * 2 ) -1;
 
 
 my $LEXICAL_MODES  = 2;
@@ -260,7 +260,19 @@ my $FORCE_MODE_NONE        = 0;
 my $FORCE_CASE_INSENSITIVE = $MODE_I; 
 my $FORCE_CASE_SENSITIVE   = $MODE_NOT_I;
                                       
+my $flavour_text;           # Global - used in replacement
+my $capture_count = 0;      # Global - used in replacement
 
+
+    
+    
+my $fo_allow_single_hex_digit = 0;
+my $fo_u_and_four_hex         = 0;
+my $fo_U_and_eight_hex        = 0;
+my $fo_escapes_in_repl        = 0;
+my $fo_unknown_escapes_ok     = 0;
+my $fo_escape_N_is_non_nl     = 0;
+my $fo_escape_N_is_uni_name   = 0;
 
 
 my %char_names = (
@@ -317,10 +329,8 @@ my @test_regex;
 
 # -------------------------------
 BEGIN { # Naked block for tokeniser
-    my $re  = '';
+    my $re  = '';     
     my $line = 0;
-    
-    my $capture_count = 0;
     
     my %escapes = (a => "\a",   # Alarm
                    e => "\e",   # Escape (the character ESC, not backslash)
@@ -330,6 +340,7 @@ BEGIN { # Naked block for tokeniser
                    t => "\t"    # Horizontal tab
                   );
     my %groups  = (d => 'digit',           D => 'non-digit',
+                                           N => 'non-newline',
                                            R => 'generic-newline',
                    s => 'whitespace',      S => 'non-whitespace',
                    w => 'word-char',       W => 'non-word-char',
@@ -356,39 +367,56 @@ BEGIN { # Naked block for tokeniser
         # Handles the characters that follow a backslash, that are handled
         # the same inside or outside of a character class
         
+        # Returns 1) type-name
+        #         2) text
+        #         3) the characters consumed
+        
         ## Perl interpolation using $ or @ not implemented
         ## Should be optional even if a Perl regex is being processed, because
         ## the regex being fed into Tre2Wre might already have been interpolated
         ## rather than being raw source.
         my ($char, $octal_digits, $group_char);
+        
         if ($re =~ / \G ( [aefnrt] ) /xgc) {
             # One of the simple escape characters
             $char = $1;
-            return ( 'char', $escapes{$char} );
+            return ( 'char', $escapes{$char}, $char);
         } elsif ( $re =~ / \G ( [wWdDsS] ) /xgc ) {
             # A group: word (or not), digit (or not), whitespace (or not)
             $group_char = $1;
-            return ( 'group', $groups{$group_char} );
+            return ( 'group', $groups{$group_char}, $group_char );
         } elsif ( $re =~ / \G ( [0-7]{2,3} ) /xgc) {
             $octal_digits = $1;
             # two or three octal digits
             ## We assume that \10 is octal, but it would be back-reference 10
-            ## if more than 10 capture groups already seen
-            return ( 'char', 'octal-' . $octal_digits );
-        } elsif ( $re =~ / \G  x ( [0-9a-fA-F]{1,2} ) /xgc) {
+            ## if ten or more capture groups already seen
+            return ( 'char', 'octal-' . $octal_digits, $octal_digits );
+        } elsif ($re =~ / \G  x ( [0-9a-fA-F]{2} ) /xgc) {
             my $hex_digits = $1;
-            # \x and one or two hex digits
+            # \x and two hex digits
+            return ( 'char', 'hex-' . $hex_digits, $hex_digits );            
+        } elsif ($fo_allow_single_hex_digit &&  $re =~ / \G  x ( [0-9a-fA-F] ) /xgc) {
+            my $hex_digits = $1;
+            # \x and one hex digit
             ## Single hex digit is deprecated in Perl
-            $hex_digits = '0' . $hex_digits if length($hex_digits) == 1;
-            return ( 'char', 'hex-' . $hex_digits );
+            return ( 'char', 'hex-0' . $hex_digits, $hex_digits );
         } elsif ( $re =~ / \G  x [{] ( [0-9a-fA-F]+ ) [}] /xgc) {
             my $hex_digits = $1;
             # \x and any number of hex digits, within braces
-            return ( 'char', 'hex-' . $hex_digits );
+            return ( 'char', 'hex-' . $hex_digits, $hex_digits );
+        } elsif ( $fo_u_and_four_hex && $re =~ / \G  u ( [0-9a-fA-F]{4} ) /xgc) {
+            my $hex_digits = $1;
+            # \u and four hex digits
+            return ( 'char', 'hex-' . $hex_digits, $hex_digits );
+        } elsif ( $fo_U_and_eight_hex && $re =~ / \G  U ( [0-9a-fA-F]{8} ) /xgc) {
+            my $hex_digits = $1;
+            # \u and four hex digits
+            return ( 'char', 'hex-' . $hex_digits, $hex_digits );                       
         } elsif ( $re =~ / \G  c ( [a-zA-Z] ) /xgc) {
+            my $raw_letter = $1;
             # \c and a letter
-            my $control_letter = uc($1);
-            return ( 'char', 'control-' . $control_letter );
+            my $control_letter = uc($raw_letter);
+            return ( 'char', 'control-' . $control_letter, $raw_letter );
         ##} elsif ( $re =~ / \G  p ( [a-zA-Z] ) /xgc) {
         ##    # \p and a letter
         ##    my $control_letter = uc($1);
@@ -398,18 +426,27 @@ BEGIN { # Naked block for tokeniser
             # 'p' or 'P' and some stuff in curlies: it's a Unicode property
             
             my $p = $1;
-            my $property = $2;
+            my $raw_property = $2;
+            my $property = $raw_property;
             my $negated = $p eq 'P';
             if ( substr($property, 0, 1) eq '^') {
                 # Perl and PCRE: allow caret to negate a Unicode property
                 $negated = not $negated;    # Invert negation
                 $property = substr($property, 1);
             }
+            if (uc $property eq 'L&') {
+                # L& is special-case to mean LULT
+                $property = 'LUTL';
+            }
             if ($negated) {
                 # Upper-case p is negated 
-                return ('matcher', "non-unicode-property-$property" );
+                return ('matcher', "non-unicode-property-$property",
+                        $p . '{' . $raw_property . '}'
+                        );
             } else {
-                return ('matcher', "unicode-property-$property" );
+                return ('matcher', "unicode-property-$property",
+                        $p . '{' . $raw_property . '}'
+                        );
             }
         } elsif ( $re =~ / \G (p) ( [LMZSNPC] ) /ixgc) {
             # 'p' or 'P' and one appropriate letter: it's a Unicode property
@@ -418,19 +455,22 @@ BEGIN { # Naked block for tokeniser
             my $property = $2;
             if ($p eq 'P') {
                 # Upper-case p means negated 
-                return ('matcher', "non-unicode-property-$property" );
+                return ('matcher', "non-unicode-property-$property",
+                        $p . $property
+                        );
             } else {
-                return ('matcher', "unicode-property-$property" );
+                return ('matcher', "unicode-property-$property",
+                        $p . $property);
             }
            
         } elsif ( $re =~ / \G ( [\\] ) /xgc ) {
-            # Any other that is a meta-character within and outside char class
+            # Any other character that is a meta-character within and outside char class
             # Literal backslash... are there any others?
             $char = $1;
-            return ('char', $char);
+            return ('char', $char, , $char);
         } else {
             # Not one of the escape sequences recognised by this routine
-            return ( 'not_common', '');
+            return ( 'not_common', '', substr($re, pos($re), 1) );
         }
     }
     # -------------------------------
@@ -484,28 +524,69 @@ BEGIN { # Naked block for tokeniser
                 return ('matcher', "backref-$payload" );
             }
         }
-
-        # \k{name}, \k<name> or \k'name' name must not begin with a number, nor contain hyphens
+        if ( $re =~ / \G k [<'{] ( [^>'}]+ ) [>'}] /xgc) {
+            # 'k' and some stuff in angle-brackets or apostrophes or braces:
+            #   it's a modern back-reference
+            ## Should do more validation of the name, but best to extract it
+            ## first and then complain if it's not valid
+            # \k{name} is the .net version - name must not begin with a number, nor contain hyphens            
+            my $payload = $1;
+            my $back_ref_number;
+            if ($payload =~ / \A -? \d+ \z /x) {
+                if (substr($payload, 0, 1) eq '-') {
+                    $back_ref_number = substr($payload, 1);
+                    return ('matcher', "backref-relative-$back_ref_number" );
+                } else {
+                    return ('matcher', "backref-$payload" );
+                }
+            } else {
+                return ('matcher', "backref-$payload" );
+            }
+        }
         
-        if ( $re =~ / \G ( [R] ) /xgc ) {
+        if ( $re =~ / \G [R] /xgc ) {
 
-            # generic-newline
+            # \R = generic-newline
             my $group_char = 'R';
             return ( 'group', $groups{$group_char} );
         }
         
         if ( $re =~ / \G ( [X] ) /xgc ) {
 
-            # Extended grapheme cluster
+            # \X = Extended grapheme cluster
             #  translates to 'unicode-combo' as the official name is too long
             my $group_char = 'X';
             return ( 'group', $groups{$group_char} );
         }
         
+        if ( $fo_escape_N_is_uni_name && $re =~ / \G [N] \{ ( [\w ]+ ) \}  /xgc ) {
+
+            # \N{name} in Perl but not PCRE means named unicode character
+            # Perl actually handles this before it gets passed to the regex, as
+            # it is just part of Perl's double-quoted string handling. But if we
+            # are passed it we have to handle it.
+            my $uni_name = $1;
+            $uni_name = lc($uni_name);
+            $uni_name =~ s/ [ ]{2,} / /gx;
+            $uni_name =~ s/ [ ] /-/gx;
+            return ( 'matcher', "un-$uni_name" );
+        }
+        if ( $fo_escape_N_is_non_nl && $re =~ / \G [N] /xgc ) {
+
+           # \N in PCRE (and Perl after version n??) means any-char-except-nl (like dot, but unaffected by /s)
+            my $group_char = 'N';
+            return ( 'group', $groups{$group_char} );
+        }
+        
+        
+        
         $re =~ / \G ( . ) /xsgc;
         my $char = $1;
         # Any other character -
-        #    Perl: treat as the literal character
+        #    Perl: treat letter as the literal character
+        if ($char =~/ ^ [a-z] $ /ix && ! $fo_unknown_escapes_ok) {
+            _error("Escaped letter \\$char is not recognised");
+        }
         return ( 'char', $char );
         ##return ( 'unknown', '');
     }
@@ -522,6 +603,12 @@ BEGIN { # Naked block for tokeniser
         $re =~ / \G ( . ) /xsgc;
         my $char = $1;
         # Any other character - treat as the literal character
+        ## [FLAVOUR] Most flavours treat escaped letters that do not have defined
+        #            escaped meanings as an error: this is sensible to allow for
+        #            letters acquiring meaning with new versions.
+        #            Perl just treats them as the letter.
+        #            We don't have to detect all errors in terse regexes, so we
+        #            can just alwys do it the Perl way.
         return ( 'escaped-char', $char );
         ##return ( 'unknown', '');
     }
@@ -555,6 +642,7 @@ BEGIN { # Naked block for tokeniser
         
         if ($in_class) {
             $free_spacing = 0;  # Free-spacing never applies inside a character class
+                     ### EXCEPT IN JAVA ???  ###
         }
         # Skip leading white space 
         if ($free_spacing) {
@@ -620,7 +708,11 @@ BEGIN { # Naked block for tokeniser
             $token      = '|';
         } elsif (  $re =~ / \G [\\] /xgc ) {
             # A backslash, so we have an escape sequence
-            my $escaped = $1;
+            my $escaped = $1;  #### WRONG! We didn't capture anything
+            ##### Looks as though escaped_within_class initially only
+            ##### handled one character after the \, so it was passed in.
+            ##### But to handle \x{123} etc. the escaped_xxx routines now
+            ##### do the parsing. Messy, but should be easy to tidy up.
             ($token_type, $token) = $in_class ? escaped_within_class($escaped)
                                               : escaped_outside_class($escaped);
                                               
@@ -672,7 +764,7 @@ BEGIN { # Naked block for tokeniser
                 my $mod = $1;
                 $tk_sub_type = $mod eq '?' ? $TKST_NON_GREEDY : $TKST_ATOMIC;
             }
-        } elsif ( ! $in_class && $re =~ / \G [(] \s* [?] ( [\-\^imsxdualp]+ ) [)] /xgc ) {
+        } elsif ( ! $in_class && $re =~ / \G [(] \s* [?] ( [\-\^imnsxdualp]+ ) [)] /xgc ) {
             # A non-spanning mode-modifier  (?^imsxdualp-imsx)
             my $modes = $1;
             $token_type = 'mode_switch';
@@ -727,8 +819,8 @@ BEGIN { # Naked block for tokeniser
                 if (      $re =~ / \G :            /xgc ) {
                     #   Group-only (?: ... )
                     $tk_sub_type = $TKST_GROUP_ONLY;
-                } elsif ( $re =~ / \G ([\-\^imsxdual]+ ) : /xgc ) {
-                    #   Mode-modified span (?^imsxdual-imsx: ... )
+                } elsif ( $re =~ / \G ([\-\^imnsxdual]+ ) : /xgc ) {
+                    #   Mode-modified span (?^imnsxdual-imnsx: ... )
                     my $mode = $1;
                     $tk_arg_a = $mode;
                     $tk_sub_type = $TKST_MODE_SPAN;
@@ -771,10 +863,20 @@ BEGIN { # Naked block for tokeniser
                 } elsif ( $re =~ / \G
                                       P< ( \w+ ) >
                                 /xgc ) {
-                    #   Named capture (?< name > ... )  Python-style
+                    #   Named capture (?P<name> ... )  Python-style
                     $tk_arg_a = $1;
                     $tk_sub_type = $TKST_CAPTURE_NAMED;
-                    $capture_count++;                    
+                    $capture_count++;
+                } elsif ( $re =~ / \G
+                                      P= ( \w+ ) [)]
+                                /xgc ) {
+                    #   Named backref (?P=name)  Python-style
+                    # Note that we have eaten the closing parenthesis
+                    # because this is not treated as a group
+                    $tk_arg_a = $1;
+                    $token_type = 'matcher';
+                    $token = "backref-$1";
+                    
                 } elsif ( $re =~ / \G >            /xgc ) {
                     #   Atomic grouping (?> ... )
                     $tk_sub_type = $TKST_ATOMIC;
@@ -880,11 +982,13 @@ regex: the exceptions are c, g and o.
         d => $MODE_D, u => $MODE_U, A => $MODE_AA, a => $MODE_A,
         l => $MODE_L, 
         x => $MODE_X, s => $MODE_S, m => $MODE_M,  i => $MODE_I,
+        n => $MODE_N,
         };   
     my $spanning_modes_ref = {
         d => $MODE_D, u => $MODE_U, A => $MODE_AA, a => $MODE_A,
         l => $MODE_L, 
         x => $MODE_X, s => $MODE_S, m => $MODE_M,  i => $MODE_I,
+        n => $MODE_N,
         };
     my $after_caret_modes_ref = {
                       u => $MODE_U, A => $MODE_AA, a => $MODE_A,
@@ -896,9 +1000,10 @@ regex: the exceptions are c, g and o.
         l => $MODE_L,
         x => $MODE_X,  s  => $MODE_S,  m => $MODE_M,  i => $MODE_I,
         p => $MODE_P,  o  => $MODE_O,  g => $MODE_G,  c => $MODE_C,
+        n => $MODE_N,
         };
 
-    my $can_be_negated = $MODE_I | $MODE_M | $MODE_S | $MODE_X;
+    my $can_be_negated = $MODE_I | $MODE_M | $MODE_S | $MODE_X | $MODE_N;
     
     my $allowed_modes_ref =
             ($allowed_modes_code == $SPANNING_MODES) ? $spanning_modes_ref
@@ -917,19 +1022,19 @@ regex: the exceptions are c, g and o.
             # Not already mode d, so force it on
             $positive_bits = $MODE_D;
         }
-        $negative_bits = $MODE_I | $MODE_M | $MODE_S | $MODE_X;
+        $negative_bits = $MODE_I | $MODE_M | $MODE_S | $MODE_X | $MODE_N;
         for my $mode_char ( split ('', substr($mode_flags_text, 1) ) ) {
             my $mode_bit = $after_caret_modes_ref->{$mode_char};
-                if (defined $mode_bit) {
-                    # Turn on the corresponding positive bit
-                    $positive_bits |= $mode_bit;
-                    # Turn off default d mode
-                    $positive_bits &= $MODE_ALL ^ $MODE_D;
-                    # Ensure the corresponding negative bit is off
-                    $negative_bits &= $MODE_ALL ^ $mode_bit;
-                } else {
-                    _error("Unrecognised mode: $mode_char in $mode_flags_text");
-                }
+            if (defined $mode_bit) {
+                # Turn on the corresponding positive bit
+                $positive_bits |= $mode_bit;
+                # Turn off default d mode
+                $positive_bits &= $MODE_ALL ^ $MODE_D;
+                # Ensure the corresponding negative bit is off
+                $negative_bits &= $MODE_ALL ^ $mode_bit;
+            } else {
+                _error("Unrecognised mode: $mode_char in $mode_flags_text");
+            }
         }
     } else {
         for my $mode_char ( split ('', $mode_flags_text) ) {
@@ -976,15 +1081,103 @@ regex: the exceptions are c, g and o.
     return $result_bits;
 }
 
+sub set_flavour {
+    # Sets global flavour-dependent flags
+    
+    ($flavour_text) = @_;
+    
+    $flavour_text = lc $flavour_text;
+    
+    
+    $fo_allow_single_hex_digit = 0;
+    $fo_u_and_four_hex         = 0;
+    $fo_U_and_eight_hex        = 0;
+    $fo_escapes_in_repl        = 0;
+    $fo_unknown_escapes_ok     = 0;
+    $fo_escape_N_is_non_nl     = 0;
+    $fo_escape_N_is_uni_name   = 0;
+
+    if ($flavour_text eq 'pcre') {
+        $fo_allow_single_hex_digit = 1;
+        $fo_u_and_four_hex         = 0;
+        $fo_U_and_eight_hex        = 0;
+        $fo_escapes_in_repl        = 1;
+        $fo_unknown_escapes_ok     = 1;
+        $fo_escape_N_is_non_nl     = 1;
+        $fo_escape_N_is_uni_name   = 0;
+    } elsif ($flavour_text eq 'perl') {
+        $fo_allow_single_hex_digit = 1;
+        $fo_u_and_four_hex         = 0;
+        $fo_U_and_eight_hex        = 0;
+        $fo_escapes_in_repl        = 1;
+        $fo_unknown_escapes_ok     = 1;
+        $fo_escape_N_is_non_nl     = 1;
+        $fo_escape_N_is_uni_name   = 1;
+    } elsif ($flavour_text eq 'javascript') {
+        $fo_allow_single_hex_digit = 0;
+        $fo_u_and_four_hex         = 1;
+        $fo_U_and_eight_hex        = 0;
+        $fo_escapes_in_repl        = 0;
+        $fo_unknown_escapes_ok     = 0;
+        $fo_escape_N_is_non_nl     = 0;
+        $fo_escape_N_is_uni_name   = 0;
+    } elsif ($flavour_text eq 'java') {
+        $fo_allow_single_hex_digit = 0;
+        $fo_u_and_four_hex         = 1;
+        $fo_U_and_eight_hex        = 0;
+        $fo_escapes_in_repl        = 1;
+        $fo_unknown_escapes_ok     = 0;
+        $fo_escape_N_is_non_nl     = 0;
+        $fo_escape_N_is_uni_name   = 0;
+    } elsif ($flavour_text eq '.net') {
+        $fo_allow_single_hex_digit = 0;
+        $fo_u_and_four_hex         = 1;
+        $fo_U_and_eight_hex        = 0;
+        $fo_escapes_in_repl        = 0;
+        $fo_unknown_escapes_ok     = 0;
+        $fo_escape_N_is_non_nl     = 0;
+        $fo_escape_N_is_uni_name   = 0;
+    } elsif ($flavour_text eq 'python') {
+        $fo_allow_single_hex_digit = 0;
+        $fo_u_and_four_hex         = 1;
+        $fo_U_and_eight_hex        = 1;
+        $fo_escapes_in_repl        = 0;
+        $fo_unknown_escapes_ok     = 0;
+        $fo_escape_N_is_non_nl     = 0;
+        $fo_escape_N_is_uni_name   = 0;
+    } else {
+        # Unknown flavour text
+        _error("Unrecognised flavour: $flavour_text");
+    }
+        
+        
+}
 sub tre_to_wre {
-    my ($old_regex, $mode_flags) = @_;
+    my ($old_regex, $mode_flags, $options, $replacement) = @_;
     $mode_flags = $mode_flags || '';
     my $default_modes_bits = 0;   # Default no modes on
+    $generated_wre = '';
     my $updated_mode_bits = apply_modes($default_modes_bits,
                                         $mode_flags,
                                         $ALL_MODES
                                         );
-    $generated_wre = '';
+    my $flavour = $options->{flavour} || $options->{flavor} || 'Perl';
+    
+    if ($flavour =~ /perl/ix) {
+        set_flavour('perl');
+    } elsif ($flavour =~ /javascript/ix) {
+        set_flavour('javascript');
+    } elsif ($flavour =~ /java/ix) {
+        set_flavour('java');
+    } elsif ($flavour =~ /net/ix) {
+        set_flavour('.NET');
+    } elsif ($flavour =~ /python/ix) {
+        set_flavour('python');        
+    } else {
+        $generated_wre = "# Unknown flavour option: $flavour\n";
+        set_flavour('perl');
+    }
+    
     $regex_struct_ref = {type=> 'root', child => []};
     my $root_ref = $regex_struct_ref->{child};    
     init_tokeniser($old_regex);
@@ -992,9 +1185,351 @@ sub tre_to_wre {
     combine_strings($regex_struct_ref);
     analyse_alts($regex_struct_ref);
     generate_wre($regex_struct_ref, 0, $updated_mode_bits);
-    return $generated_wre;
+    
+    my $wre_replace = '';
+    if (defined $replacement) {
+        $wre_replace = convert_replace($replacement, $capture_count);
+    }
+    return $generated_wre . $wre_replace;
+}
+# -------------------------------
+
+{ # naked block for replace code
+    my $current_string = '';
+    my $current_string_contains_dq = 0;
+    my $current_string_contains_sq = 0;
+    my $converted_replacement = '';
+    my $single_quote = "'";
+    my $double_quote = '"';
+    
+sub convert_replace {
+    my ($terse_replace, $number_of_captures) = @_;
+    
+    # Terse replacement is mostly literal text
+    # In Perl it's a double-quoted string, so we handle interpolation -
+    # but we can only interpolate regex-related variables
+    # Named variables can be handled, but their use seems unlikely
+    
+    # $& means overall-match/entire-match in Perl/.Net
+    #     Also pre-match and post-match
+    # $$ means $ in .Net. Would interpolate to pid in Perl
+    # $1, $2 etc. should expand to captured-n: backref-n would work, but it is
+    #   not a back-reference so we shouldn't propagate that mistake
+    # ${name} is a named capture in .Net 
+    # $+{name} is a named capture in Perl
+    # $0 is the overall match in Java
+    
+    # Perl provides the usual backslash escapes for double-quoted strings:
+    #  non-groups, e.g.
+    #          \\ \n \t \b \a \e \f \n \r
+    #          \octal - complex, very flavour dependent
+    #          \xnn
+    #          \xn (single-digit, deprecated)
+    #          \x{12345}
+    #          \cx
+    #      any other character after backslash is just a literal character
+    #        (not really a good idea, but that's what Perl does)
+    #  but not groups , e.g.
+    #       \d \s \p{name} \X etc.
+    
+    # .Net does not allow character escapes
+    
+    # Only replace $1 etc. if there was a corresponding capture
+    
+    #  Literal characters tab, newline (and others?) need to be converted to
+    #  their names. Space can be left as part of a quoted string
+    #
+    
+    # The semantics of replace might allow us to put them on a single line,
+    # with implied sequence rather than the alternation that applies in a regex.
+    # But to avoid confusion, generate the various bits as a vertical list, or
+    # maybe use 'then'
+    #
+    
+    # replace-with
+    #     'text in quotes including ", spaces, $ symbols and \ backslashes'
+    #     "text including 'single' quotes is double-quoted"
+    #     'text with both " and '
+    #     "' is split into multiple quoted strings '"' "'"
+    #     # No naked characters: use one-character quoted strings
+    #     'a'
+    #     tab           # Perl \t, all flavours literal tab
+    #     newline       # Perl \n,  all flavours literal newline
+    #     hex-34        # Perl \xnn, \x{nnn} etc.
+    #     overall-match
+    #     captured-1 # etc., if corresponding captures exist
+    #     captured-name
+    #     pre-match
+    #     post-match
+        
+    # Do our own tokenising, as we have to handle $$, $1 etc.
+    # but use the escape-sequence routines to avoid duplication
+    
+    $current_string = '';
+    $current_string_contains_dq = 0;
+    $current_string_contains_sq = 0;
+    $converted_replacement = "replace-with";
+    $single_quote = "'";
+    $double_quote = '"';
+    
+    init_tokeniser($terse_replace);
+    
+    my $repl_token_re;
+    my $end_of_repl = 0;
+
+    if ( $fo_escapes_in_repl )  {
+        $repl_token_re = qr/ \G ( .*? ) ( [\\\$"'\t\n\f\r\a\e] | \z ) /x;
+                            # end-of-previous-match
+                            # capture opt minimal chs
+                            # capture  \ $ dq sq tab nl form-feed carriage-return alarm escape eos
+    } else {
+        # Flavours that don't have escaped characters in the replacement text
+        $repl_token_re = qr/ \G ( .*? ) (   [\$"'\t\n\f\r\a\e] | \z ) /x;
+                            # end-of-previous-match
+                            # capture opt minimal chs
+                            # capture   $ dq sq tab nl form-feed carriage-return alarm escape eos
+    }
+    my $max_chunks = 10;
+    while ($max_chunks-- > 0 && not $end_of_repl) {
+        
+        my $chunk_found = $terse_replace =~ /$repl_token_re/gc;
+        my ($chunk, $delim) = ($1, $2);
+        $current_string .= $chunk;
+        if (length $delim == 0) {
+            # Last chunk
+            $end_of_repl = 1;
+        } elsif ($delim eq $single_quote) {
+            if ($current_string_contains_dq == 0) {
+                # No double-quotes previously, so just keep appending
+                $current_string_contains_sq = 1;
+                # append chunk and delim to current_string
+                $current_string .= $delim;
+            } else {
+                # Already have double-quote pending, so flush
+                output_current_string();
+                $current_string = $delim;
+            }
+        } elsif ($delim eq $double_quote) {
+            if ($current_string_contains_sq == 0) {
+                $current_string_contains_dq = 1;
+                $current_string .= $delim;
+            } else {
+                output_current_string();
+                $current_string = $delim;
+            }
+        } elsif ($delim eq '$') {
+            my $found_a_char = $terse_replace =~ / \G ( . | \z ) /gcmx;
+            my $char = $1;
+            if ($char eq '') {
+                # end_of_replace
+                $current_string .= '$';
+                $end_of_repl = 1;
+            } elsif ($char eq '$') {
+                $current_string .= '$';
+            } elsif ($char eq '0') {
+                output_keyword('overall-match');                    
+            } elsif ($char =~ / [1-9] /x
+                     && $number_of_captures >= $char) {
+                output_keyword('captured-' . $char);
+            } elsif ($char eq '&') {
+                output_keyword('overall-match');
+            } else {
+                $current_string .= '$' . $char;
+            }
+        } elsif ($delim eq '\\' && $flavour_text eq 'perl') {
+            init_tokeniser(substr($terse_replace, pos($terse_replace)));
+            
+            my ($escape_code, $escape_text, $chars) = escaped_common();
+            pos($terse_replace) += length $chars; # Adjust our position
+            if ($escape_code eq 'group') {
+                _error("Escape sequence not allowed in replace: \\$chars");
+            } elsif ($escape_code eq 'char') {
+                if (length $escape_text == 1) {
+                    output_keyword($char_names{$escape_text});
+                } else {
+                    output_keyword($escape_text);
+                }
+            } elsif ($escape_code eq 'not_common') {
+                # unrecognised escape 
+                if ($chars =~ / ^ [a-z] $ /ix) {
+                    # \ and a letter that we don't recognise
+                    _error("\\$chars not allowed in replace");
+                } elsif ($chars =~ / ^ [1-9] $ /ix) {
+                    # \ and a digit: Perl deprecated backref
+                    #   (they should use $ and a digit instead)
+                    output_keyword('captured-' . $chars);
+                } else {
+                    # \ and something else, probably punctuation
+                    # Just treat it as unescaped
+                    ## Is this flavour-specific?
+                    $current_string .= $chars;
+                }
+            } else {
+                _error("\\$chars not allowed in replace");
+            }
+        } else {
+            output_keyword($char_names{$delim});
+        }
+    }
+    output_current_string();
+    return $converted_replacement;
 }
 
+sub output_current_string {
+    if (length $current_string > 0) {
+        my $string;
+        if ($current_string_contains_sq) {
+            $string = $double_quote . $current_string . $double_quote;
+        } else {
+            $string = $single_quote . $current_string . $single_quote;
+        }
+        $converted_replacement .= "\n    $string";
+    }
+    init_replace_chunk();
+}
+sub output_keyword {
+    my ($text) = @_;
+    output_current_string();
+    $converted_replacement .= "\n    $text";
+}
+
+sub init_replace_chunk {
+    $current_string = '';
+    $current_string_contains_sq = 0;
+    $current_string_contains_dq = 0;
+}
+
+} # end of naked block for replace
+
+    # Tokenise and assemble into chunks
+    # Plain literal text goes into a quoted strings
+    # Keep track of whether we have seen sq or dq,
+    #   terminate current quoted string assembly if we have one already and find
+    #   the other
+    # Variable interpolation
+    # Some characters never included in strings
+    #   literal tab or newline
+    #   Perl escape sequences
+    #
+    # Get a (possibly null) chunk, terminated by
+    #       $  because that's interpolation or $$
+    #       \  only for Perl, so we can handle escape sequences
+    #       "  so we can create the right sort of quoted string
+    #       '  so we can create the right sort of quoted string
+    #       tab, newline, form-feed etc. (so we can replace these
+    #             literal characters with their names)
+    #       end of string
+    
+=for
+    while not end of replace
+        (chunk, delim) = get_chunk
+        if end of replace
+            output_current_string()
+        elsif delim eq sq
+            if current_string__contain_dq == 0
+                current_string_contains_sq = 1
+                append chunk and delim to current_string
+            else
+                output_current_string()
+        elsif delim eq dq
+            if current_string__contain_sq == 0
+                current_string_contains_dq = 1
+                append chunk and delim to current_string
+            else
+                output_current_string()
+        elsif delim eq '$'
+            get one char
+            if end_of_replace
+                append '$' to current_string
+                output_current_string()
+            elsif char eq '$'
+                append '$' to current_string
+            elsif char is digit 1 thru 9
+                output_current_string()
+                output_keyword('captured-' . char)
+            elsif char eq '&'
+                output_current_string()
+                output_keyword('overall-match')
+        elsif delim eq '\' and flavour eq 'perl'
+            (escape_code, escape_text) = escaped_common()
+            if escape_code eq 'group'
+                error "Escape sequence not allowed in replace: escape_text)
+            elsif escape_code = 'char'
+                if length escape_text == 1
+                    output_current_string()
+                    output_keyword(char_names{escape_text})
+                else
+                    output_current_string()
+                    output_keyword(escape_text)
+            else
+                error "escape_text not allowed in replace"
+            
+        else
+            output_current_string()
+            output_keyword(char_names{delim})
+
+sub output_current_string
+    if current_string is not null
+        if current_string_contains_sq
+            string = dq . current_string . dq
+        else
+            string = sq . current_string . sq
+        replace .= newline . '    ' . string
+    init_replace_chunk()
+
+sub output_keyword(text)
+    output_current_string
+    replace .= newline . '    ' . text
+    
+
+sub init_replace_chunk
+    current_string = ''
+    current_string_contains_sq = 0
+    current_string_contains_dq = 0
+
+
+
+JAVA
+
+    Java literal strings use \ as an escape character.
+    
+    So to pass the two characters "\n" as a regex or replacement string, the
+    backslash has to be doubled, i.e. "\\n". Otherwise the backslash acts as
+    an escape in the literal string. If it's something legal like \f than the
+    escaped meaning of the character is used (e.g. form feed). If it's a
+    punctuation character, then it means that character literally. A backslash
+    followed by a letter than is not one of the specified set is an error, but
+    we don't have to enforce that.
+
+    To convert to the convention used by other flavours, replace any occurence
+    of two consecutive backslashes with a single backslash.
+    So  \\\\  becomes  \\
+        \\\n  becomes  \\n
+    
+
+from: http://docs.oracle.com/javase/7/docs/api/java/util/regex/Matcher.html#appendReplacement%28java.lang.StringBuffer,%20java.lang.String%29
+
+    The replacement string may contain references to sub-sequences captured
+    during the previous match: Each occurrence of ${name} or $g will be replaced
+    by the result of evaluating the corresponding group(name) or group(g)
+    respectively. For $g, the first number after the $ is always treated as part
+    of the group reference. Subsequent numbers are incorporated into g if they
+    would form a legal group reference. Only the numerals '0' through '9' are
+    considered as potential components of the group reference. If the second
+    group matched the string "foo", for example, then passing the replacement
+    string "$2bar" would cause "foobar" to be appended to the string buffer. A
+    dollar sign ($) may be included as a literal in the replacement string by
+    preceding it with a backslash (\$).
+
+    Note that backslashes (\) and dollar signs ($) in the replacement string may
+    cause the results to be different than if it were being treated as a literal
+    replacement string. Dollar signs may be treated as references to captured
+    subsequences as described above, and backslashes are used to escape literal
+    characters in the replacement string. 
+
+
+=cut
+    
 
 
 # -------------------------------
@@ -1050,13 +1585,21 @@ sub named_character {
 }
 # -------------------------------
 sub number_words {
-    # Passed a number
+    # Passed a number and a prefix
     # Returns the word equivalent
-    my ($number) = @_;
+    #
+    # If the number is too large to get a word and the prefix is not null,
+    # the retuned equivalent is prepended with the prefix and a single space
+    
+    my ($number, $prefix) = @_;
     my @number_word = ('zero', 'one', 'two', 'three', 'four', 'five', 'six',
                        'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve');
     if ($number < 0 || $number > 12) {
-        return $number;
+        if ($prefix) {
+            return $prefix . ' ' . $number;
+        } else {
+            return $number;
+        }
     } else {
         return $number_word[$number];
     }
@@ -1108,7 +1651,7 @@ sub quants {
                 }
             }
         } else {
-            $text = number_words($min) . ' ';
+            $text = number_words($min, 'qty') . ' ';
             if ($max eq 'more') {
                 $text .= 'or more ';
             } elsif ($max == $min + 1) {
@@ -1145,7 +1688,7 @@ sub emit_line {
         # end-of-string
         # ...so it's a literal with just multiple spaces
         my $multiple_spaces = $1;
-        $line = number_words(length $multiple_spaces) . ' spaces';
+        $line = number_words(length $multiple_spaces, 'qty') . ' spaces';
     }
     
     $line =~ s/ \s+ $//x;
@@ -1279,8 +1822,11 @@ sub generate_stuff_from_entry {
     } elsif ($entry_type eq 'char_class') {
         if ($entry_ref->{negated}) {
             my $char_count = scalar @{$entry_ref->{chars}};
-            
-            $line .= 'not ';
+            if ($char_count > 0) {
+                $line .= 'not ';
+            } else {
+                $line .= 'character ';
+            }
         }
         for my $char ( @{$entry_ref->{chars}} ) {
             $line .= named_single_character($char) . $sp;
@@ -1353,7 +1899,7 @@ sub generate_stuff_from_entry {
         my ($hash_ref, $indent_level, $modes) = @_;
         
         # The only mode acted on here (currently) is /i (case-insensitive)
-        # Modes /x, /m and /s are used when parsing the terse regex
+        # Modes /x, /m, /n and /s are used when parsing the terse regex
         
         # Unicode modes ( /d /u /a /aa /l ) may also be need support here. For
         # example, \w in the terse regex input will generate 'word-ch' in the
@@ -1497,9 +2043,10 @@ sub generate_stuff_from_entry {
                 }
                 emit_line($current_indent);
             ################ alt > 1 FALSE ### all_on_one_line TRUE ########
-            ################ and therefore there cannot be any mode_switch_a's
+            ################ and therefore there cannot be any mode_switch_a's ????
             } elsif ($number_of_alternatives <= 1 && $all_on_one_line) {
-                $line .= $mode_switch_b_text unless $mode_switch_a_is_first;
+                $line .= $mode_switch_a_is_first ? $leading_mode_switch_a_text
+                                                 : $mode_switch_b_text;
                 for my $entry_ref ( @{$alt_ref} ){
                     # For each entry within this (the only) alternative
                     generate_stuff_from_entry($entry_ref) if $entry_ref->{type} ne 'removed';
@@ -1967,13 +2514,14 @@ sub analyse_regex {
             }
             my $char_count = 1;
             CHAR:
-            until ($token_type eq 'right_bracket' && $char_count > 1
+            until ($token_type eq 'right_bracket'
+                     && ($char_count > 1 || $flavour_text eq 'javascript')
                    || $token_type eq 'end_of_regex') {
                 if (   $token eq '-'
                     && $token_type ne 'escaped-char'
                     && $char_count > 1) {
                     # A hyphen that might be introducing a range, but not if
-                    # it is the first or last character in the range
+                    # it is the first or last character in the class
                     ($token_type, $token) = get_next_token($x_mode, $IN_CLASS);
                     if ($token_type eq 'right_bracket') {
                         # Hyphen was last character in class, add it to list
@@ -1982,15 +2530,14 @@ sub analyse_regex {
                     } else {
                         my $range_start = @{$tree_ref->[$alt_ndx][$part_ndx]{chars}}[-1];
                         my $range_end = $token;
-                        ## my $range_text = 'range ' . $range_start . ' to ' . $token;
                         my $range_text = $range_start . ' to ' . $token;
                         if (    $range_start lt $range_end
                              && (  ($range_start =~ / ^ [a-z] $ /x
-                                 && $range_start =~ / ^ [a-z] $ /x)
+                                 && $range_end   =~ / ^ [a-z] $ /x)
                                 || ($range_start =~ / ^ [A-Z] $ /x
-                                 && $range_start =~ / ^ [A-Z] $ /x)
+                                 && $range_end   =~ / ^ [A-Z] $ /x)
                                 || ($range_start =~ / ^ [0-9] $ /x
-                                 && $range_start =~ / ^ [0-9] $ /x)
+                                 && $range_end   =~ / ^ [0-9] $ /x)
                                 )
                              ){
                             $range_text = $range_start . '-' . $range_end;    
@@ -2025,6 +2572,10 @@ sub analyse_regex {
             
         } elsif ($token_type eq 'paren_start') {
             # Left parenthesis, possibly plus some other goodies
+            if ($tk_sub_type eq $TKST_CAPTURE_ANON
+                && $mode_bits & $MODE_N) {
+                $tk_sub_type = $TKST_GROUP_ONLY;                
+            }
             $tree_ref->[$alt_ndx][$part_ndx] = {type     => 'nested',
                                                 sub_type => $tk_sub_type,
                                                 options  => $tk_arg_a,
@@ -2176,20 +2727,43 @@ sub _handle_terse {
     my ($terse_in) = @_;
     chomp $terse_in;
     my $modes = '';
+    my $replace = undef;
     my $terse;
     if ($terse_in eq 'builtin') {
         _builtin_tests();
     } else {
         if (substr($terse_in, 0, 1) eq '/') {
             # Perl-style regex in /regex/modes format
-            ($terse, $modes) =  $terse_in =~ m{ \A  \/ (.*) \/ ( [ismxdual-]* ) \z }x;
+            #  (except that we don't handle escaped / characters)
+            # or maybe replace in /regex/replace/modes format
+            if ($terse_in =~ m{
+                (?sx: \/                      #     /
+                (?<regex>.                    #     as regex one or more minimal character
+                +?)(?<midsep>                 #     as midsep
+                (?<!\\                        #         not preceding \
+                )(?: \\\\                     #         zero or more '\\'
+                )*\/                          #         /
+                )(?<repl>(?:.+                #     as repl opt chs
+                )?)\/                         #     /
+                (?<modes>(?:.+                #     as modes opt chs
+                )?) )
+                               }x  ) {
+                # Replacement in /regex/repl/modes format
+                # midsep is used to avoid variable-length look-behind
+                $terse   = $+{regex} . $+{midsep};
+                chop $terse;
+                $replace = $+{repl};
+                $modes   = $+{modes};
+            } else {
+                ($terse, $modes) =  $terse_in =~ m{ \A  \/ (.*) \/ ( [ismxdual-]* ) \z }x;
+            }
         } elsif (substr($terse_in, 0, 1) eq '~') {
             # Perl-style regex in ~regex~modes format
             ($terse, $modes) =  $terse_in =~ m{ \A  ~ (.*)  ~ ( [ismxdual-]* ) \z }x;
         } else {
             $terse = $terse_in;
         }
-        my $wre = tre_to_wre($terse, $modes);
+        my $wre = tre_to_wre($terse, $modes, undef, $replace);
         print "\nterse:\n$terse\n\nwordy:\n$wre\n";
     }
 }
@@ -2224,7 +2798,7 @@ TO DO:
              we have to handle it: possibly only 'require' the names module when
              this construct is seen.
 \N{U+hex}   Unicode by code point
-\N          non-newline (experimental from Perl 5.12). If it is still experimental
+\N          non-newline (experimental from Perl 5.12). As it is still experimental
             then it's not appropriate to generate this, but we should accept it
             in conventional regex input. Syntax looks messy to distinguish from
             named/numbered Unicode. Need to check whether it is used in other
